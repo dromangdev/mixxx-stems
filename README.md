@@ -1,118 +1,85 @@
-# Mixxx
+# Mixxx Stems
 
-[![GitHub latest tag](https://img.shields.io/github/tag/mixxxdj/mixxx.svg)](https://mixxx.org/download)
-[![Packaging status](https://repology.org/badge/tiny-repos/mixxx.svg)](https://repology.org/metapackage/mixxx/versions)
-[![Build status](https://github.com/mixxxdj/mixxx/actions/workflows/build.yml/badge.svg)](https://github.com/mixxxdj/mixxx/actions/workflows/build.yml)
-[![Coverage status](https://coveralls.io/repos/github/mixxxdj/mixxx/badge.svg)](https://coveralls.io/github/mixxxdj/mixxx)
-[![Zulip chat](https://img.shields.io/badge/zulip-join_chat-brightgreen.svg)](https://mixxx.zulipchat.com)
-[![Donate](https://img.shields.io/badge/Donate-PayPal-green.svg)](https://mixxx.org/donate)
+[![License: GPL v2](https://img.shields.io/badge/License-GPLv2-blue.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/Platform-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey.svg)](https://github.com/dromangdev/mixxx-stems)
+[![Engine](https://img.shields.io/badge/AI%20Engine-HTDemucs%20v4%20%2F%20FT-orange.svg)](https://github.com/dromangdev/mixxx-stems)
+[![ONNX](https://img.shields.io/badge/Inference-ONNX%20Runtime%20C%2B%2B-blueviolet.svg)](https://github.com/microsoft/onnxruntime)
 
-[Mixxx] is Free DJ software that gives you everything you need to perform live
-DJ mixes. Mixxx works on GNU/Linux, Windows, and macOS.
+**Mixxx Stems** is a high-performance fork of [Mixxx 2.5](https://mixxx.org) featuring **Real-Time Deep Neural Network AI Stem Separation** (*Vocals*, *Drums*, *Instruments*). Powered by Meta AI's **HTDemucs v4** & **HTDemucs-FT** and Microsoft's **ONNX Runtime C++**.
 
-## Quick Start
+---
 
-To get started with Mixxx:
+## ✨ Features
 
-1. For live use, [download the latest stable version][download-stable].
-2. For experimentation and testing, [download a development release][download-testing].
-3. To live on the bleeding edge, clone the repo: `git clone https://github.com/mixxxdj/mixxx.git`
+- **🧠 Real Neural Network Separation:** True acoustic source separation (not simple EQ frequency cuts). Separates complex mixes into pristine Vocals, Drums, and Instruments.
+- **⚡ 100% Offline & Private:** Runs entirely on local hardware (CPU / GPU / Apple Neural Engine). No internet connection or cloud API is needed to DJ.
+- **🔁 Overlap-Add Crossfade (OLA):** 25% overlap processing with linear trapezoidal windowing eliminates clicks and phase jumps between chunk boundaries.
+- **💾 VirtualDJ-Style Disk Cache (`.stems`):** Once a track is processed, stems are cached locally for instant loading (<50 ms) on all future sessions.
+- **🎛️ Integrated LateNight Skin Controls:** Dedicated per-deck controls for **Mute**, **Solo**, **Gain Faders**, and **Reset** for each individual stem.
+- **🛡️ Zero-Latency DSP Fallback:** 4th-order Linkwitz-Riley (24 dB/oct) crossover filter automatically engages if neural network models are absent.
+- **📦 Zero-Setup Dependency Fetch:** CMake automatically downloads and links prebuilt ONNX Runtime libraries for your OS and architecture during build if not already installed.
 
-## Bug tracker
+---
 
-The Mixxx team uses [Github Issues][issues] to manage Mixxx development.
+## 🚀 Quick Start
 
-Have a bug or feature request? [File a bug on Github][fileabug].
+### 1. Clone the repository
 
-Want to get involved in Mixxx development? Assign yourself a bug from the [easy
-bug list][easybugs] and get started!
-Read [CONTRIBUTING](CONTRIBUTING.md) for more information.
+```bash
+git clone https://github.com/dromangdev/mixxx-stems.git
+cd mixxx-stems
+```
 
-## Building Mixxx
+### 2. Download the AI Models
 
-First, open a terminal (on Windows, use "**x64 Native Tools Command Prompt for
-[VS 2022][visualstudio2022]**"), download the mixxx
-source code and navigate to it:
+Place the model weights into the `models/` directory:
 
-    $ git clone https://github.com/mixxxdj/mixxx.git
-    $ cd mixxx
+```bash
+mkdir -p models
+# Dual specialist models (Recommended for highest fidelity):
+curl -L -o models/htdemucs_ft_vocals.onnx "https://huggingface.co/StemSplitio/htdemucs-ft-onnx/resolve/main/htdemucs_ft_vocals.onnx"
+curl -L -o models/htdemucs_ft_drums.onnx  "https://huggingface.co/StemSplitio/htdemucs-ft-onnx/resolve/main/htdemucs_ft_drums.onnx"
+```
 
-Download the required dependencies and set up the build environment by running the
-corresponding command for your operating system:
+*(See [models/README.md](models/README.md) for alternative models like standard HTDemucs v4, SCNet, or BS-RoFormer).*
 
-| Platform | Command | Requirements |
-| -- | ------- | ------------ |
-| Windows | `tools\windows_buildenv.bat` | ~2.5 GB download, ~9 GB disk space |
-| macOS | `source tools/macos_buildenv.sh setup` | ~1.5 GB download, ~3 GB disk space |
-| Debian/Ubuntu | `tools/debian_buildenv.sh setup` | ~200 MB download, ~1 GB disk space |
-| Fedora | `tools/rpm_buildenv.sh setup` | ~200 MB download, ~1 GB disk space |
-| Flatpak | `tools/flatpak_buildenv.sh setup` | ~2.6 GB download, ~5 GB disk space |
-| Other Linux distros | See the [wiki article](https://github.com/mixxxdj/mixxx/wiki/Compiling%20on%20Linux) | |
+### 3. Build & Run
 
-To build Mixxx, run
+```bash
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j$(nproc 2>/dev/null || sysctl -n hw.ncpu)
 
-    $ mkdir build
-    $ cd build
-    $ cmake ..
-    $ cmake --build .
+# Run Mixxx
+./build/mixxx
+```
 
-There should now be a `mixxx` executable in the current directory that you can
-run. Alternatively, can generate a package using `cpack`.
+> **Note:** ONNX Runtime is automatically detected or downloaded by CMake during the configure step. No manual package installation required.
 
-For building and installing Mixxx as a Flatpak, check the documentation in [packaging/flatpak/README.md](packaging/flatpak/README.md).
+---
 
-Detailed build instructions for each target OS can be found [on the wiki](https://github.com/mixxxdj/mixxx/wiki#compile-mixxx-from-source-code)
+## 🎚️ How to Use in Mixxx
 
-## Documentation
+1. Open **Mixxx** and load any song into **Deck 1** or **Deck 2**.
+2. In the **LateNight** skin, locate the **STEMS** section under each deck's waveform.
+3. Use the **VOCALS**, **DRUMS**, and **INST** buttons:
+   - **Mute (`M`):** Cut out vocals or drums on the fly for live mashups.
+   - **Solo (`S`):** Isolate an acapella or drum break instantly.
+   - **Faders:** Adjust relative volume balance between stems.
+   - **Reset (`R`):** Instantly restore original track balance.
 
-For help using Mixxx, there are a variety of options:
+---
 
-- [Mixxx manual][manual]
-- [Mixxx wiki][wiki]
-- [Hardware Compatibility]
-- [Creating Skins]
+## 📂 Model Storage Paths
 
-## Translation
+The engine automatically scans the following locations for `.onnx` models:
+- `./models/` (Local repository root)
+- Application directory (`<exe_path>/models/` or macOS app bundle resources)
+- **macOS:** `~/Library/Application Support/Mixxx/models/`
+- **Linux:** `~/.local/share/Mixxx/models/` or `/usr/share/mixxx/models/`
+- **Windows:** `%LOCALAPPDATA%\Mixxx\models\`
 
-Help to spread Mixxx with translations into more languages, as well as to update and ensure the accuracy of existing translations.
+---
 
-- [Help translate content]
-- [Mixxx i18n wiki]
-- [Mixxx localization forum]
-- [Mixxx glossary]
+## 📄 License
 
-## Community
-
-Mixxx is a vibrant community of hackers, DJs and artists. To keep track of
-development and community news:
-
-- Chat with us on [Zulip][zulip].
-- Follow us on [Mastodon], [Twitter] and [Facebook].
-- Subscribe to the [Mixxx Blog][blog].
-- Post on the [Mixxx forums][discourse].
-
-## License
-
-Mixxx is released under the GPLv2. See the LICENSE file for a full copy of the
-license.
-
-[mixxx]: https://mixxx.org
-[download-stable]: https://mixxx.org/download/#stable
-[download-testing]: https://mixxx.org/download/#testing
-[issues]: https://github.com/mixxxdj/mixxx/issues
-[fileabug]: https://github.com/mixxxdj/mixxx/issues/new/choose
-[mastodon]: https://floss.social/@mixxx
-[twitter]: https://twitter.com/mixxxdj
-[facebook]: https://www.facebook.com/pages/Mixxx-DJ-Software/21723485212
-[blog]: https://mixxx.org/news/
-[manual]: https://manual.mixxx.org/
-[wiki]: https://github.com/mixxxdj/mixxx/wiki
-[visualstudio2022]: https://docs.microsoft.com/visualstudio/install/install-visual-studio?view=vs-2022
-[easybugs]: https://github.com/mixxxdj/mixxx/issues?q=is%3Aopen+is%3Aissue+label%3Aeasy
-[creating skins]: https://mixxx.org/wiki/doku.php/Creating-Skins
-[help translate content]: https://explore.transifex.com/mixxx-dj-software/
-[Mixxx i18n wiki]: https://github.com/mixxxdj/mixxx/wiki/Internationalization
-[Mixxx localization forum]: https://mixxx.discourse.group/c/translation/13
-[hardware compatibility]: https://manual.mixxx.org/2.3/en/hardware/manuals.html
-[zulip]: https://mixxx.zulipchat.com/
-[discourse]: https://mixxx.discourse.group/
+Mixxx Stems is licensed under the [GNU General Public License v2 (GPL-2.0)](LICENSE).
