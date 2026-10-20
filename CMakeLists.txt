@@ -2823,6 +2823,8 @@ target_link_libraries(mixxx-lib PUBLIC mixxx-proto)
 target_include_directories(mixxx-lib SYSTEM PUBLIC lib/rigtorp/SPSCQueue/include)
 
 # ONNX Runtime for HTDemucs v4 Stem Separation (Portable for macOS, Linux, Windows, Android)
+option(MIXXX_AUTO_DOWNLOAD_ONNX "Automatically download ONNX Runtime prebuilts if missing from system" ON)
+
 find_path(ONNXRUNTIME_INCLUDE_DIR NAMES onnxruntime_cxx_api.h
   PATHS
     /opt/homebrew/include/onnxruntime
@@ -2842,11 +2844,79 @@ find_library(ONNXRUNTIME_LIBRARY NAMES onnxruntime
     /usr/lib/aarch64-linux-gnu
     ${ANDROID_NDK}/sources/third_party/onnxruntime/libs/${ANDROID_ABI}
 )
+
+# If ONNX Runtime is not installed on the system, automatically download official Microsoft prebuilts
+if(NOT (ONNXRUNTIME_INCLUDE_DIR AND ONNXRUNTIME_LIBRARY) AND MIXXX_AUTO_DOWNLOAD_ONNX)
+  set(ORT_VERSION "1.19.2")
+  set(ORT_URL "")
+
+  if(APPLE)
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
+      set(ORT_URL "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-osx-arm64-${ORT_VERSION}.tgz")
+    else()
+      set(ORT_URL "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-osx-x86_64-${ORT_VERSION}.tgz")
+    endif()
+  elseif(WIN32)
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64|ARM64")
+      set(ORT_URL "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-win-arm64-${ORT_VERSION}.zip")
+    else()
+      set(ORT_URL "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-win-x64-${ORT_VERSION}.zip")
+    endif()
+  elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR UNIX)
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
+      set(ORT_URL "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-linux-aarch64-${ORT_VERSION}.tgz")
+    else()
+      set(ORT_URL "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-linux-x64-${ORT_VERSION}.tgz")
+    endif()
+  endif()
+
+  if(ORT_URL)
+    message(STATUS "ONNX Runtime not found on host system. Automatically downloading official prebuilt binaries (${ORT_VERSION})...")
+    include(FetchContent)
+    FetchContent_Declare(
+      onnxruntime_prebuilt
+      URL "${ORT_URL}"
+      DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    )
+    FetchContent_MakeAvailable(onnxruntime_prebuilt)
+
+    set(ONNXRUNTIME_INCLUDE_DIR "${onnxruntime_prebuilt_SOURCE_DIR}/include")
+    find_library(ONNXRUNTIME_LIBRARY NAMES onnxruntime
+      PATHS "${onnxruntime_prebuilt_SOURCE_DIR}/lib"
+      NO_DEFAULT_PATH
+    )
+
+    if(APPLE)
+      file(GLOB ORT_LIBS "${onnxruntime_prebuilt_SOURCE_DIR}/lib/libonnxruntime*.*dylib*")
+      foreach(LIB_ITEM ${ORT_LIBS})
+        if(NOT IS_SYMLINK ${LIB_ITEM})
+          add_custom_command(TARGET mixxx POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${LIB_ITEM}" "$<TARGET_FILE_DIR:mixxx>/"
+            COMMENT "Copying ONNX Runtime library to application directory"
+          )
+        endif()
+      endforeach()
+    elseif(WIN32)
+      file(GLOB ORT_DLLS "${onnxruntime_prebuilt_SOURCE_DIR}/lib/*.dll")
+      foreach(DLL_ITEM ${ORT_DLLS})
+        add_custom_command(TARGET mixxx POST_BUILD
+          COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          "${DLL_ITEM}" "$<TARGET_FILE_DIR:mixxx>/"
+          COMMENT "Copying ONNX Runtime DLL to application directory"
+        )
+      endforeach()
+    endif()
+  endif()
+endif()
+
 if(ONNXRUNTIME_INCLUDE_DIR AND ONNXRUNTIME_LIBRARY)
   message(STATUS "Found ONNX Runtime: ${ONNXRUNTIME_LIBRARY}")
   target_include_directories(mixxx-lib SYSTEM PUBLIC ${ONNXRUNTIME_INCLUDE_DIR})
   target_link_libraries(mixxx-lib PUBLIC ${ONNXRUNTIME_LIBRARY})
   target_compile_definitions(mixxx-lib PUBLIC MIXXX_HAS_ONNXRUNTIME)
+else()
+  message(STATUS "ONNX Runtime not available: Stems engine will compile using Linkwitz-Riley DSP crossover fallback.")
 endif()
 
 # Qt
