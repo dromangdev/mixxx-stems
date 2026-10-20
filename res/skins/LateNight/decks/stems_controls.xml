@@ -1,0 +1,210 @@
+<Template>
+  <WidgetGroup>
+    <ObjectName>StemControls</ObjectName>
+    <Layout>vertical</Layout>
+    <SizePolicy>min,min</SizePolicy>
+    <MinimumSize>172,52</MinimumSize>
+    <MaximumSize>220,52</MaximumSize>
+    <Children>
+
+      <!-- Row 1: Mute/Unmute Stems (Vocals, Drums, Instruments) + Reset -->
+      <WidgetGroup>
+        <ObjectName>StemRow1</ObjectName>
+        <Layout>horizontal</Layout>
+        <SizePolicy>min,min</SizePolicy>
+        <Children>
+
+          <!-- VOCALS Toggle (Left: Mute/Unmute, Right: Solo) -->
+          <PushButton>
+            <Tooltip>Vocals: Left-click to Mute/Unmute, Right-click to Solo</Tooltip>
+            <ObjectName>StemVocalsButton</ObjectName>
+            <Size>44f,26f</Size>
+            <NumberStates>2</NumberStates>
+            <RightClickIsPushButton>true</RightClickIsPushButton>
+            <State>
+              <Number>0</Number>
+              <Text>VOC</Text>
+              <Alignment>center</Alignment>
+            </State>
+            <State>
+              <Number>1</Number>
+              <Text>VOC</Text>
+              <Alignment>center</Alignment>
+            </State>
+            <Connection>
+              <ConfigKey><Variable name="Group"/>,stem_vocals_enabled</ConfigKey>
+              <ButtonState>LeftButton</ButtonState>
+            </Connection>
+            <Connection>
+              <ConfigKey><Variable name="Group"/>,stem_vocals_solo</ConfigKey>
+              <ButtonState>RightButton</ButtonState>
+            </Connection>
+          </PushButton>
+
+          <WidgetGroup><Size>2f,0min</Size></WidgetGroup>
+
+          <!-- DRUMS Toggle (Left: Mute/Unmute, Right: Solo) -->
+          <PushButton>
+            <Tooltip>Drums: Left-click to Mute/Unmute, Right-click to Solo</Tooltip>
+            <ObjectName>StemDrumsButton</ObjectName>
+            <Size>44f,26f</Size>
+            <NumberStates>2</NumberStates>
+            <RightClickIsPushButton>true</RightClickIsPushButton>
+            <State>
+              <Number>0</Number>
+              <Text>DRUM</Text>
+              <Alignment>center</Alignment>
+            </State>
+            <State>
+              <Number>1</Number>
+              <Text>DRUM</Text>
+              <Alignment>center</Alignment>
+            </State>
+            <Connection>
+              <ConfigKey><Variable name="Group"/>,stem_drums_enabled</ConfigKey>
+              <ButtonState>LeftButton</ButtonState>
+            </Connection>
+            <Connection>
+              <ConfigKey><Variable name="Group"/>,stem_drums_solo</ConfigKey>
+              <ButtonState>RightButton</ButtonState>
+            </Connection>
+          </PushButton>
+
+          <WidgetGroup><Size>2f,0min</Size></WidgetGroup>
+
+          <!-- INST Toggle (Left: Mute/Unmute, Right: Solo) -->
+          <PushButton>
+            <Tooltip>Instruments: Left-click to Mute/Unmute, Right-click to Solo</Tooltip>
+            <ObjectName>StemInstButton</ObjectName>
+            <Size>44f,26f</Size>
+            <NumberStates>2</NumberStates>
+            <RightClickIsPushButton>true</RightClickIsPushButton>
+            <State>
+              <Number>0</Number>
+              <Text>INST</Text>
+              <Alignment>center</Alignment>
+            </State>
+            <State>
+              <Number>1</Number>
+              <Text>INST</Text>
+              <Alignment>center</Alignment>
+            </State>
+            <Connection>
+              <ConfigKey><Variable name="Group"/>,stem_inst_enabled</ConfigKey>
+              <ButtonState>LeftButton</ButtonState>
+            </Connection>
+            <Connection>
+              <ConfigKey><Variable name="Group"/>,stem_inst_solo</ConfigKey>
+              <ButtonState>RightButton</ButtonState>
+            </Connection>
+          </PushButton>
+
+          <WidgetGroup><Size>2f,0min</Size></WidgetGroup>
+
+          <!-- ALL (Reset all stems to ON) -->
+          <PushButton>
+            <Tooltip>Reset: Unmute all stems</Tooltip>
+            <ObjectName>StemResetButton</ObjectName>
+            <Size>34f,26f</Size>
+            <NumberStates>1</NumberStates>
+            <State>
+              <Number>0</Number>
+              <Text>ALL</Text>
+              <Alignment>center</Alignment>
+            </State>
+            <Connection>
+              <ConfigKey><Variable name="Group"/>,stem_reset</ConfigKey>
+            </Connection>
+          </PushButton>
+
+        </Children>
+      </WidgetGroup><!-- /StemRow1 -->
+
+      <!-- Row 2: Solo Buttons + Engine Mode (DSP vs AI) -->
+      <WidgetGroup>
+        <ObjectName>StemRow2</ObjectName>
+        <Layout>horizontal</Layout>
+        <SizePolicy>min,min</SizePolicy>
+        <Children>
+
+          <!-- Solo Vocals -->
+          <PushButton>
+            <Tooltip>Solo Vocals</Tooltip>
+            <ObjectName>StemSoloVocButton</ObjectName>
+            <Size>44f,26f</Size>
+            <NumberStates>1</NumberStates>
+            <State>
+              <Number>0</Number>
+              <Text>S-VOC</Text>
+              <Alignment>center</Alignment>
+            </State>
+            <Connection>
+              <ConfigKey><Variable name="Group"/>,stem_vocals_solo</ConfigKey>
+            </Connection>
+          </PushButton>
+
+          <WidgetGroup><Size>2f,0min</Size></WidgetGroup>
+
+          <!-- Solo Drums -->
+          <PushButton>
+            <Tooltip>Solo Drums</Tooltip>
+            <ObjectName>StemSoloDrmButton</ObjectName>
+            <Size>44f,26f</Size>
+            <NumberStates>1</NumberStates>
+            <State>
+              <Number>0</Number>
+              <Text>S-DRM</Text>
+              <Alignment>center</Alignment>
+            </State>
+            <Connection>
+              <ConfigKey><Variable name="Group"/>,stem_drums_solo</ConfigKey>
+            </Connection>
+          </PushButton>
+
+          <WidgetGroup><Size>2f,0min</Size></WidgetGroup>
+
+          <!-- Solo Instruments -->
+          <PushButton>
+            <Tooltip>Solo Instruments</Tooltip>
+            <ObjectName>StemSoloInstButton</ObjectName>
+            <Size>44f,26f</Size>
+            <NumberStates>1</NumberStates>
+            <State>
+              <Number>0</Number>
+              <Text>S-INST</Text>
+              <Alignment>center</Alignment>
+            </State>
+            <Connection>
+              <ConfigKey><Variable name="Group"/>,stem_inst_solo</ConfigKey>
+            </Connection>
+          </PushButton>
+
+          <WidgetGroup><Size>2f,0min</Size></WidgetGroup>
+
+          <!-- AI / DSP Toggle -->
+          <PushButton>
+            <Tooltip>Stem Engine Mode: DSP Realtime vs HTDemucs AI</Tooltip>
+            <ObjectName>StemModeButton</ObjectName>
+            <Size>34f,26f</Size>
+            <NumberStates>2</NumberStates>
+            <State>
+              <Number>0</Number>
+              <Text>DSP</Text>
+              <Alignment>center</Alignment>
+            </State>
+            <State>
+              <Number>1</Number>
+              <Text>AI</Text>
+              <Alignment>center</Alignment>
+            </State>
+            <Connection>
+              <ConfigKey><Variable name="Group"/>,stems_source</ConfigKey>
+            </Connection>
+          </PushButton>
+
+        </Children>
+      </WidgetGroup><!-- /StemRow2 -->
+
+    </Children>
+  </WidgetGroup><!-- /StemControls -->
+</Template>
