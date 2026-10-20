@@ -1,0 +1,3295 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 0eb839b..f64a516 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -884,6 +884,12 @@ add_library(mixxx-lib STATIC EXCLUDE_FROM_ALL
+   src/engine/channels/enginechannel.cpp
+   src/engine/channels/enginedeck.cpp
+   src/engine/channels/enginemicrophone.cpp
++  src/engine/stems/stemcache.cpp
++  src/engine/stems/stemchannelprocessor.cpp
++  src/engine/stems/stemdspisolator.cpp
++  src/engine/stems/stemseparator.cpp
++  src/engine/stems/stemtrackbuffer.cpp
++  src/engine/stems/stemworkerthread.cpp
+   src/engine/controls/bpmcontrol.cpp
+   src/engine/controls/clockcontrol.cpp
+   src/engine/controls/cuecontrol.cpp
+@@ -2149,6 +2155,7 @@ if(BUILD_TESTING)
+     src/test/controllers/controller_columnid_regression_test.cpp
+     src/test/controllerscriptenginelegacy_test.cpp
+     src/test/controlobjecttest.cpp
++    src/test/stemstest.cpp
+     src/test/controlobjectaliastest.cpp
+     src/test/controlobjectscripttest.cpp
+     src/test/controlpotmetertest.cpp
+@@ -2754,6 +2761,7 @@ else()
+     # LAST (see https://cmake.org/cmake/help/latest/variable/CMAKE_FIND_FRAMEWORK.html)
+     set(_previous_find_framework ${CMAKE_FIND_FRAMEWORK})
+     set(CMAKE_FIND_FRAMEWORK FIRST)
++    set(WrapOpenGL_AGL "WrapOpenGL_AGL-NOTFOUND" CACHE FILEPATH "" FORCE)
+   endif()
+   set(OpenGL_GL_PREFERENCE "GLVND")
+   find_package(OpenGL REQUIRED)
+@@ -2814,6 +2822,116 @@ target_link_libraries(mixxx-lib PUBLIC mixxx-proto)
+ # https://github.com/rigtorp/SPSCQueue
+ target_include_directories(mixxx-lib SYSTEM PUBLIC lib/rigtorp/SPSCQueue/include)
+ 
++# ONNX Runtime for HTDemucs v4 Stem Separation (Portable for macOS, Linux, Windows, Android)
++option(MIXXX_AUTO_DOWNLOAD_ONNX "Automatically download ONNX Runtime prebuilts if missing from system" ON)
++
++find_path(ONNXRUNTIME_INCLUDE_DIR NAMES onnxruntime_cxx_api.h
++  PATHS
++    /opt/homebrew/include/onnxruntime
++    /opt/homebrew/include
++    /usr/local/include/onnxruntime
++    /usr/local/include
++    /usr/include/onnxruntime
++    /usr/include
++    ${ANDROID_NDK}/sources/third_party/onnxruntime/include
++)
++find_library(ONNXRUNTIME_LIBRARY NAMES onnxruntime
++  PATHS
++    /opt/homebrew/lib
++    /usr/local/lib
++    /usr/lib
++    /usr/lib/x86_64-linux-gnu
++    /usr/lib/aarch64-linux-gnu
++    ${ANDROID_NDK}/sources/third_party/onnxruntime/libs/${ANDROID_ABI}
++)
++
++# If ONNX Runtime is not installed on the system, automatically download official Microsoft prebuilts
++if(NOT (ONNXRUNTIME_INCLUDE_DIR AND ONNXRUNTIME_LIBRARY) AND MIXXX_AUTO_DOWNLOAD_ONNX)
++  set(ORT_VERSION "1.19.2")
++  set(ORT_URL "")
++
++  if(ANDROID)
++    set(ORT_URL "https://repo1.maven.org/maven2/com/microsoft/onnxruntime/onnxruntime-android/${ORT_VERSION}/onnxruntime-android-${ORT_VERSION}.aar")
++  elseif(APPLE)
++    if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
++      set(ORT_URL "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-osx-arm64-${ORT_VERSION}.tgz")
++    else()
++      set(ORT_URL "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-osx-x86_64-${ORT_VERSION}.tgz")
++    endif()
++  elseif(WIN32)
++    if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64|ARM64")
++      set(ORT_URL "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-win-arm64-${ORT_VERSION}.zip")
++    else()
++      set(ORT_URL "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-win-x64-${ORT_VERSION}.zip")
++    endif()
++  elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux" OR UNIX)
++    if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
++      set(ORT_URL "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-linux-aarch64-${ORT_VERSION}.tgz")
++    else()
++      set(ORT_URL "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-linux-x64-${ORT_VERSION}.tgz")
++    endif()
++  endif()
++
++  if(ORT_URL)
++    message(STATUS "ONNX Runtime not found on host system. Automatically downloading official prebuilt binaries (${ORT_VERSION})...")
++    include(FetchContent)
++    FetchContent_Declare(
++      onnxruntime_prebuilt
++      URL "${ORT_URL}"
++      DOWNLOAD_EXTRACT_TIMESTAMP TRUE
++    )
++    FetchContent_MakeAvailable(onnxruntime_prebuilt)
++
++    if(ANDROID)
++      set(ONNXRUNTIME_INCLUDE_DIR "${onnxruntime_prebuilt_SOURCE_DIR}/headers")
++      find_library(ONNXRUNTIME_LIBRARY NAMES onnxruntime
++        PATHS "${onnxruntime_prebuilt_SOURCE_DIR}/jni/${ANDROID_ABI}"
++        NO_DEFAULT_PATH
++      )
++      set_target_properties(mixxx PROPERTIES
++        QT_ANDROID_EXTRA_LIBS "${ONNXRUNTIME_LIBRARY}"
++      )
++    else()
++      set(ONNXRUNTIME_INCLUDE_DIR "${onnxruntime_prebuilt_SOURCE_DIR}/include")
++      find_library(ONNXRUNTIME_LIBRARY NAMES onnxruntime
++        PATHS "${onnxruntime_prebuilt_SOURCE_DIR}/lib"
++        NO_DEFAULT_PATH
++      )
++    endif()
++
++    if(APPLE)
++      file(GLOB ORT_LIBS "${onnxruntime_prebuilt_SOURCE_DIR}/lib/libonnxruntime*.*dylib*")
++      foreach(LIB_ITEM ${ORT_LIBS})
++        if(NOT IS_SYMLINK ${LIB_ITEM})
++          add_custom_command(TARGET mixxx POST_BUILD
++            COMMAND ${CMAKE_COMMAND} -E copy_if_different
++            "${LIB_ITEM}" "$<TARGET_FILE_DIR:mixxx>/"
++            COMMENT "Copying ONNX Runtime library to application directory"
++          )
++        endif()
++      endforeach()
++    elseif(WIN32)
++      file(GLOB ORT_DLLS "${onnxruntime_prebuilt_SOURCE_DIR}/lib/*.dll")
++      foreach(DLL_ITEM ${ORT_DLLS})
++        add_custom_command(TARGET mixxx POST_BUILD
++          COMMAND ${CMAKE_COMMAND} -E copy_if_different
++          "${DLL_ITEM}" "$<TARGET_FILE_DIR:mixxx>/"
++          COMMENT "Copying ONNX Runtime DLL to application directory"
++        )
++      endforeach()
++    endif()
++  endif()
++endif()
++
++if(ONNXRUNTIME_INCLUDE_DIR AND ONNXRUNTIME_LIBRARY)
++  message(STATUS "Found ONNX Runtime: ${ONNXRUNTIME_LIBRARY}")
++  target_include_directories(mixxx-lib SYSTEM PUBLIC ${ONNXRUNTIME_INCLUDE_DIR})
++  target_link_libraries(mixxx-lib PUBLIC ${ONNXRUNTIME_LIBRARY})
++  target_compile_definitions(mixxx-lib PUBLIC MIXXX_HAS_ONNXRUNTIME)
++else()
++  message(STATUS "ONNX Runtime not available: Stems engine will compile using Linkwitz-Riley DSP crossover fallback.")
++endif()
++
+ # Qt
+ set(
+   QT_COMPONENTS
+@@ -2906,6 +3024,7 @@ if(QML)
+   endif()
+   set_target_properties(mixxx-qml-lib PROPERTIES AUTOMOC ON)
+   qt_add_qml_module(mixxx-qml-lib
++    NO_CACHEGEN
+     URI Mixxx
+     VERSION 1.0
+     RESOURCE_PREFIX /mixxx.org/imports
+@@ -2935,6 +3054,7 @@ if(QML)
+   qt_add_library(mixxx-qml-mixxxcontrols STATIC)
+   set_target_properties(mixxx-qml-mixxxcontrols PROPERTIES AUTOMOC ON)
+   qt_add_qml_module(mixxx-qml-mixxxcontrols
++    NO_CACHEGEN
+     URI Mixxx.Controls
+     VERSION 1.0
+     RESOURCE_PREFIX /mixxx.org/imports
+diff --git a/models/README.md b/models/README.md
+new file mode 100644
+index 0000000..155bb58
+--- /dev/null
++++ b/models/README.md
+@@ -0,0 +1,30 @@
++# AI Stem Separation Models for Mixxx
++
++This directory holds the ONNX deep neural network models used by Mixxx's AI Stem Separation engine (`mixxx::HTDemucsEngine`).
++
++## Supported Models
++
++### 1. HTDemucs Fine-Tuned (HTDemucs-FT) [Active Default]
++High-fidelity specialist models trained with 4x extended training steps by Meta AI:
++- `htdemucs_ft_vocals.onnx` (158 MB FP16 weights): Specialised vocal separation.
++- `htdemucs_ft_drums.onnx` (158 MB FP16 weights): Specialised drum separation.
++- Download from: `https://huggingface.co/StemSplitio/htdemucs-ft-onnx`
++
++### 2. HTDemucs v4 Standard
++Unified 4-stem Hybrid Transformer model (Alexander Défossez / Meta AI):
++- `htdemucs.onnx` (158 MB FP16 weights)
++- Download from: `https://huggingface.co/StemSplitio/htdemucs-onnx`
++
++### 3. SCNet Large (Sparse Compression Network)
++Winner of Sony MDX-C 2023 Challenge (4 stems: drums, bass, other, vocals):
++- `scnet-large.int8.onnx` (43 MB INT8 weights)
++- Download from: `https://huggingface.co/audiojs/scnet-large`
++
++### 4. BS-RoFormer (Band-Split RoPE Transformer)
++Band-Split RoPE Transformer by viperx / lucidrains (SDR 12.9 dB):
++- `bs_roformer_ep317_quantized.onnx` (158 MB UINT8 weights)
++- Download from: `https://huggingface.co/xycld/BS-RoFormer-ONNX`
++
++## Storage Note
++Due to file sizes (>100MB), `.onnx` files are excluded from git tracking and should be stored locally or cached in:
++`~/Library/Application Support/Mixxx/models/` or `<mixxx-root>/models/`.
+diff --git a/res/skins/LateNight/decks/row_5_transportLoopJump.xml b/res/skins/LateNight/decks/row_5_transportLoopJump.xml
+index 6e823d6..89bd31f 100644
+--- a/res/skins/LateNight/decks/row_5_transportLoopJump.xml
++++ b/res/skins/LateNight/decks/row_5_transportLoopJump.xml
+@@ -368,6 +368,12 @@
+             </Connection>
+           </WidgetGroup><!-- /Jump buttons + beatjump size spinbox -->
+ 
++          <WidgetGroup><Size>2f,0min</Size></WidgetGroup>
++          <WidgetGroup><SizePolicy>i,min</SizePolicy><MaximumSize>12,</MaximumSize></WidgetGroup>
++
++          <!-- STEMS SEPARATION CONTROLS -->
++          <Template src="skins:LateNight/decks/stems_controls.xml"/>
++
+           <WidgetGroup><Size>2f,0min</Size></WidgetGroup>
+           <WidgetGroup><SizePolicy>i,min</SizePolicy></WidgetGroup>
+         </Children>
+diff --git a/res/skins/LateNight/decks/stems_controls.xml b/res/skins/LateNight/decks/stems_controls.xml
+new file mode 100644
+index 0000000..c0b939d
+--- /dev/null
++++ b/res/skins/LateNight/decks/stems_controls.xml
+@@ -0,0 +1,210 @@
++<Template>
++  <WidgetGroup>
++    <ObjectName>StemControls</ObjectName>
++    <Layout>vertical</Layout>
++    <SizePolicy>min,min</SizePolicy>
++    <MinimumSize>172,52</MinimumSize>
++    <MaximumSize>220,52</MaximumSize>
++    <Children>
++
++      <!-- Row 1: Mute/Unmute Stems (Vocals, Drums, Instruments) + Reset -->
++      <WidgetGroup>
++        <ObjectName>StemRow1</ObjectName>
++        <Layout>horizontal</Layout>
++        <SizePolicy>min,min</SizePolicy>
++        <Children>
++
++          <!-- VOCALS Toggle (Left: Mute/Unmute, Right: Solo) -->
++          <PushButton>
++            <Tooltip>Vocals: Left-click to Mute/Unmute, Right-click to Solo</Tooltip>
++            <ObjectName>StemVocalsButton</ObjectName>
++            <Size>44f,26f</Size>
++            <NumberStates>2</NumberStates>
++            <RightClickIsPushButton>true</RightClickIsPushButton>
++            <State>
++              <Number>0</Number>
++              <Text>VOC</Text>
++              <Alignment>center</Alignment>
++            </State>
++            <State>
++              <Number>1</Number>
++              <Text>VOC</Text>
++              <Alignment>center</Alignment>
++            </State>
++            <Connection>
++              <ConfigKey><Variable name="Group"/>,stem_vocals_enabled</ConfigKey>
++              <ButtonState>LeftButton</ButtonState>
++            </Connection>
++            <Connection>
++              <ConfigKey><Variable name="Group"/>,stem_vocals_solo</ConfigKey>
++              <ButtonState>RightButton</ButtonState>
++            </Connection>
++          </PushButton>
++
++          <WidgetGroup><Size>2f,0min</Size></WidgetGroup>
++
++          <!-- DRUMS Toggle (Left: Mute/Unmute, Right: Solo) -->
++          <PushButton>
++            <Tooltip>Drums: Left-click to Mute/Unmute, Right-click to Solo</Tooltip>
++            <ObjectName>StemDrumsButton</ObjectName>
++            <Size>44f,26f</Size>
++            <NumberStates>2</NumberStates>
++            <RightClickIsPushButton>true</RightClickIsPushButton>
++            <State>
++              <Number>0</Number>
++              <Text>DRUM</Text>
++              <Alignment>center</Alignment>
++            </State>
++            <State>
++              <Number>1</Number>
++              <Text>DRUM</Text>
++              <Alignment>center</Alignment>
++            </State>
++            <Connection>
++              <ConfigKey><Variable name="Group"/>,stem_drums_enabled</ConfigKey>
++              <ButtonState>LeftButton</ButtonState>
++            </Connection>
++            <Connection>
++              <ConfigKey><Variable name="Group"/>,stem_drums_solo</ConfigKey>
++              <ButtonState>RightButton</ButtonState>
++            </Connection>
++          </PushButton>
++
++          <WidgetGroup><Size>2f,0min</Size></WidgetGroup>
++
++          <!-- INST Toggle (Left: Mute/Unmute, Right: Solo) -->
++          <PushButton>
++            <Tooltip>Instruments: Left-click to Mute/Unmute, Right-click to Solo</Tooltip>
++            <ObjectName>StemInstButton</ObjectName>
++            <Size>44f,26f</Size>
++            <NumberStates>2</NumberStates>
++            <RightClickIsPushButton>true</RightClickIsPushButton>
++            <State>
++              <Number>0</Number>
++              <Text>INST</Text>
++              <Alignment>center</Alignment>
++            </State>
++            <State>
++              <Number>1</Number>
++              <Text>INST</Text>
++              <Alignment>center</Alignment>
++            </State>
++            <Connection>
++              <ConfigKey><Variable name="Group"/>,stem_inst_enabled</ConfigKey>
++              <ButtonState>LeftButton</ButtonState>
++            </Connection>
++            <Connection>
++              <ConfigKey><Variable name="Group"/>,stem_inst_solo</ConfigKey>
++              <ButtonState>RightButton</ButtonState>
++            </Connection>
++          </PushButton>
++
++          <WidgetGroup><Size>2f,0min</Size></WidgetGroup>
++
++          <!-- ALL (Reset all stems to ON) -->
++          <PushButton>
++            <Tooltip>Reset: Unmute all stems</Tooltip>
++            <ObjectName>StemResetButton</ObjectName>
++            <Size>34f,26f</Size>
++            <NumberStates>1</NumberStates>
++            <State>
++              <Number>0</Number>
++              <Text>ALL</Text>
++              <Alignment>center</Alignment>
++            </State>
++            <Connection>
++              <ConfigKey><Variable name="Group"/>,stem_reset</ConfigKey>
++            </Connection>
++          </PushButton>
++
++        </Children>
++      </WidgetGroup><!-- /StemRow1 -->
++
++      <!-- Row 2: Solo Buttons + Engine Mode (DSP vs AI) -->
++      <WidgetGroup>
++        <ObjectName>StemRow2</ObjectName>
++        <Layout>horizontal</Layout>
++        <SizePolicy>min,min</SizePolicy>
++        <Children>
++
++          <!-- Solo Vocals -->
++          <PushButton>
++            <Tooltip>Solo Vocals</Tooltip>
++            <ObjectName>StemSoloVocButton</ObjectName>
++            <Size>44f,26f</Size>
++            <NumberStates>1</NumberStates>
++            <State>
++              <Number>0</Number>
++              <Text>S-VOC</Text>
++              <Alignment>center</Alignment>
++            </State>
++            <Connection>
++              <ConfigKey><Variable name="Group"/>,stem_vocals_solo</ConfigKey>
++            </Connection>
++          </PushButton>
++
++          <WidgetGroup><Size>2f,0min</Size></WidgetGroup>
++
++          <!-- Solo Drums -->
++          <PushButton>
++            <Tooltip>Solo Drums</Tooltip>
++            <ObjectName>StemSoloDrmButton</ObjectName>
++            <Size>44f,26f</Size>
++            <NumberStates>1</NumberStates>
++            <State>
++              <Number>0</Number>
++              <Text>S-DRM</Text>
++              <Alignment>center</Alignment>
++            </State>
++            <Connection>
++              <ConfigKey><Variable name="Group"/>,stem_drums_solo</ConfigKey>
++            </Connection>
++          </PushButton>
++
++          <WidgetGroup><Size>2f,0min</Size></WidgetGroup>
++
++          <!-- Solo Instruments -->
++          <PushButton>
++            <Tooltip>Solo Instruments</Tooltip>
++            <ObjectName>StemSoloInstButton</ObjectName>
++            <Size>44f,26f</Size>
++            <NumberStates>1</NumberStates>
++            <State>
++              <Number>0</Number>
++              <Text>S-INST</Text>
++              <Alignment>center</Alignment>
++            </State>
++            <Connection>
++              <ConfigKey><Variable name="Group"/>,stem_inst_solo</ConfigKey>
++            </Connection>
++          </PushButton>
++
++          <WidgetGroup><Size>2f,0min</Size></WidgetGroup>
++
++          <!-- AI / DSP Toggle -->
++          <PushButton>
++            <Tooltip>Stem Engine Mode: DSP Realtime vs HTDemucs AI</Tooltip>
++            <ObjectName>StemModeButton</ObjectName>
++            <Size>34f,26f</Size>
++            <NumberStates>2</NumberStates>
++            <State>
++              <Number>0</Number>
++              <Text>DSP</Text>
++              <Alignment>center</Alignment>
++            </State>
++            <State>
++              <Number>1</Number>
++              <Text>AI</Text>
++              <Alignment>center</Alignment>
++            </State>
++            <Connection>
++              <ConfigKey><Variable name="Group"/>,stems_source</ConfigKey>
++            </Connection>
++          </PushButton>
++
++        </Children>
++      </WidgetGroup><!-- /StemRow2 -->
++
++    </Children>
++  </WidgetGroup><!-- /StemControls -->
++</Template>
+diff --git a/res/skins/LateNight/style.qss b/res/skins/LateNight/style.qss
+index 20f09b6..4afdc98 100644
+--- a/res/skins/LateNight/style.qss
++++ b/res/skins/LateNight/style.qss
+@@ -1045,3 +1045,120 @@ WLibrarySidebar {
+ #Border58 {
+   border: 1px solid #585858;
+ }
++
++/*****************************************************************************/
++/************** Stems Separation Controls ************************************/
++
++#StemControls {
++  background-color: transparent;
++}
++
++#StemRow1, #StemRow2 {
++  background-color: transparent;
++}
++
++#StemControls WPushButton {
++  border-radius: 3px;
++  font-family: "Open Sans", "Segoe UI", sans-serif;
++  font-size: 11px;
++  font-weight: bold;
++  text-align: center;
++  margin: 0px 1px;
++  padding: 0px;
++}
++
++/* VOCALS: Cyan/Blue */
++WPushButton#StemVocalsButton[value="1"] {
++  background-color: #0284c7;
++  color: #ffffff;
++  border: 1px solid #38bdf8;
++}
++WPushButton#StemVocalsButton[value="0"] {
++  background-color: #1a1a1a;
++  color: #4b5563;
++  border: 1px solid #2d2d2d;
++}
++
++/* DRUMS: Amber/Orange */
++WPushButton#StemDrumsButton[value="1"] {
++  background-color: #d97706;
++  color: #ffffff;
++  border: 1px solid #f59e0b;
++}
++WPushButton#StemDrumsButton[value="0"] {
++  background-color: #1a1a1a;
++  color: #4b5563;
++  border: 1px solid #2d2d2d;
++}
++
++/* INSTRUMENTS: Emerald/Green */
++WPushButton#StemInstButton[value="1"] {
++  background-color: #16a34a;
++  color: #ffffff;
++  border: 1px solid #22c55e;
++}
++WPushButton#StemInstButton[value="0"] {
++  background-color: #1a1a1a;
++  color: #4b5563;
++  border: 1px solid #2d2d2d;
++}
++
++/* RESET ALL BUTTON */
++WPushButton#StemResetButton {
++  background-color: #262626;
++  color: #e5e7eb;
++  border: 1px solid #3f3f46;
++  font-size: 10px;
++}
++WPushButton#StemResetButton:pressed {
++  background-color: #52525b;
++  color: #ffffff;
++}
++
++/* SOLO BUTTONS */
++WPushButton#StemSoloVocButton {
++  background-color: #0f2231;
++  color: #7dd3fc;
++  border: 1px solid #0369a1;
++  font-size: 9px;
++}
++WPushButton#StemSoloVocButton:pressed {
++  background-color: #0284c7;
++  color: #ffffff;
++}
++
++WPushButton#StemSoloDrmButton {
++  background-color: #2b1f13;
++  color: #fcd34d;
++  border: 1px solid #b45309;
++  font-size: 9px;
++}
++WPushButton#StemSoloDrmButton:pressed {
++  background-color: #d97706;
++  color: #ffffff;
++}
++
++WPushButton#StemSoloInstButton {
++  background-color: #112818;
++  color: #86efac;
++  border: 1px solid #15803d;
++  font-size: 9px;
++}
++WPushButton#StemSoloInstButton:pressed {
++  background-color: #16a34a;
++  color: #ffffff;
++}
++
++/* ENGINE MODE TOGGLE (DSP vs AI) */
++WPushButton#StemModeButton[value="0"] {
++  background-color: #1f2937;
++  color: #38bdf8;
++  border: 1px solid #0284c7;
++  font-size: 10px;
++}
++WPushButton#StemModeButton[value="1"] {
++  background-color: #7c3aed;
++  color: #ffffff;
++  border: 1px solid #a855f7;
++  font-size: 10px;
++}
+diff --git a/res/skins/LateNight/style_classic.qss b/res/skins/LateNight/style_classic.qss
+index 3834488..38cf903 100644
+--- a/res/skins/LateNight/style_classic.qss
++++ b/res/skins/LateNight/style_classic.qss
+@@ -2538,6 +2538,117 @@ WLibrarySidebar::branch:open:has-children:has-siblings {
+ 
+ /************** common styles for WEffectSelector ******************************
+ *************** QSpinBox, QMenu, QToolTip *************************************/
++
++/************** Stems Separation Controls **************************************/
++#DeckRow_5_LoopCuesTransport #StemControls {
++  background-color: transparent;
++}
++
++#DeckRow_5_LoopCuesTransport #StemControls WPushButton {
++  border-radius: 3px;
++  font-family: "Open Sans", "Segoe UI", sans-serif;
++  font-size: 11px;
++  font-weight: bold;
++  text-align: center;
++  margin: 0px 1px;
++  padding: 0px;
++}
++
++/* VOCALS: Cyan/Blue */
++#DeckRow_5_LoopCuesTransport WPushButton#StemVocalsButton[value="1"] {
++  background-color: #0284c7;
++  color: #ffffff;
++  border: 1px solid #38bdf8;
++}
++#DeckRow_5_LoopCuesTransport WPushButton#StemVocalsButton[value="0"] {
++  background-color: #1a1a1a;
++  color: #4b5563;
++  border: 1px solid #2d2d2d;
++}
++
++/* DRUMS: Amber/Orange */
++#DeckRow_5_LoopCuesTransport WPushButton#StemDrumsButton[value="1"] {
++  background-color: #d97706;
++  color: #ffffff;
++  border: 1px solid #f59e0b;
++}
++#DeckRow_5_LoopCuesTransport WPushButton#StemDrumsButton[value="0"] {
++  background-color: #1a1a1a;
++  color: #4b5563;
++  border: 1px solid #2d2d2d;
++}
++
++/* INSTRUMENTS: Emerald/Green */
++#DeckRow_5_LoopCuesTransport WPushButton#StemInstButton[value="1"] {
++  background-color: #16a34a;
++  color: #ffffff;
++  border: 1px solid #22c55e;
++}
++#DeckRow_5_LoopCuesTransport WPushButton#StemInstButton[value="0"] {
++  background-color: #1a1a1a;
++  color: #4b5563;
++  border: 1px solid #2d2d2d;
++}
++
++/* RESET ALL BUTTON */
++#DeckRow_5_LoopCuesTransport WPushButton#StemResetButton {
++  background-color: #262626;
++  color: #e5e7eb;
++  border: 1px solid #3f3f46;
++  font-size: 10px;
++}
++#DeckRow_5_LoopCuesTransport WPushButton#StemResetButton:pressed {
++  background-color: #52525b;
++  color: #ffffff;
++}
++
++/* SOLO BUTTONS */
++#DeckRow_5_LoopCuesTransport WPushButton#StemSoloVocButton {
++  background-color: #0f2231;
++  color: #7dd3fc;
++  border: 1px solid #0369a1;
++  font-size: 9px;
++}
++#DeckRow_5_LoopCuesTransport WPushButton#StemSoloVocButton:pressed {
++  background-color: #0284c7;
++  color: #ffffff;
++}
++
++#DeckRow_5_LoopCuesTransport WPushButton#StemSoloDrmButton {
++  background-color: #2b1f13;
++  color: #fcd34d;
++  border: 1px solid #b45309;
++  font-size: 9px;
++}
++#DeckRow_5_LoopCuesTransport WPushButton#StemSoloDrmButton:pressed {
++  background-color: #d97706;
++  color: #ffffff;
++}
++
++#DeckRow_5_LoopCuesTransport WPushButton#StemSoloInstButton {
++  background-color: #112818;
++  color: #86efac;
++  border: 1px solid #15803d;
++  font-size: 9px;
++}
++#DeckRow_5_LoopCuesTransport WPushButton#StemSoloInstButton:pressed {
++  background-color: #16a34a;
++  color: #ffffff;
++}
++
++/* ENGINE MODE TOGGLE (DSP vs AI) */
++#DeckRow_5_LoopCuesTransport WPushButton#StemModeButton[value="0"] {
++  background-color: #1f2937;
++  color: #38bdf8;
++  border: 1px solid #0284c7;
++  font-size: 10px;
++}
++#DeckRow_5_LoopCuesTransport WPushButton#StemModeButton[value="1"] {
++  background-color: #7c3aed;
++  color: #ffffff;
++  border: 1px solid #a855f7;
++  font-size: 10px;
++}
+ QToolTip,
+ #MainMenu QMenu,
+ WLibrarySidebar QMenu,
+@@ -2763,3 +2874,114 @@ WSearchLineEdit::indicator:unchecked:selected {
+ }
+ /************** common styles for WEffectSelector ******************************
+ *************** QSpinBox, QMenu, QToolTip *************************************/
++
++/************** Stems Separation Controls **************************************/
++#DeckRow_5_LoopCuesTransport #StemControls {
++  background-color: transparent;
++}
++
++#DeckRow_5_LoopCuesTransport #StemControls WPushButton {
++  border-radius: 3px;
++  font-family: "Open Sans", "Segoe UI", sans-serif;
++  font-size: 11px;
++  font-weight: bold;
++  text-align: center;
++  margin: 0px 1px;
++  padding: 0px;
++}
++
++/* VOCALS: Cyan/Blue */
++#DeckRow_5_LoopCuesTransport WPushButton#StemVocalsButton[value="1"] {
++  background-color: #0284c7;
++  color: #ffffff;
++  border: 1px solid #38bdf8;
++}
++#DeckRow_5_LoopCuesTransport WPushButton#StemVocalsButton[value="0"] {
++  background-color: #1a1a1a;
++  color: #4b5563;
++  border: 1px solid #2d2d2d;
++}
++
++/* DRUMS: Amber/Orange */
++#DeckRow_5_LoopCuesTransport WPushButton#StemDrumsButton[value="1"] {
++  background-color: #d97706;
++  color: #ffffff;
++  border: 1px solid #f59e0b;
++}
++#DeckRow_5_LoopCuesTransport WPushButton#StemDrumsButton[value="0"] {
++  background-color: #1a1a1a;
++  color: #4b5563;
++  border: 1px solid #2d2d2d;
++}
++
++/* INSTRUMENTS: Emerald/Green */
++#DeckRow_5_LoopCuesTransport WPushButton#StemInstButton[value="1"] {
++  background-color: #16a34a;
++  color: #ffffff;
++  border: 1px solid #22c55e;
++}
++#DeckRow_5_LoopCuesTransport WPushButton#StemInstButton[value="0"] {
++  background-color: #1a1a1a;
++  color: #4b5563;
++  border: 1px solid #2d2d2d;
++}
++
++/* RESET ALL BUTTON */
++#DeckRow_5_LoopCuesTransport WPushButton#StemResetButton {
++  background-color: #262626;
++  color: #e5e7eb;
++  border: 1px solid #3f3f46;
++  font-size: 10px;
++}
++#DeckRow_5_LoopCuesTransport WPushButton#StemResetButton:pressed {
++  background-color: #52525b;
++  color: #ffffff;
++}
++
++/* SOLO BUTTONS */
++#DeckRow_5_LoopCuesTransport WPushButton#StemSoloVocButton {
++  background-color: #0f2231;
++  color: #7dd3fc;
++  border: 1px solid #0369a1;
++  font-size: 9px;
++}
++#DeckRow_5_LoopCuesTransport WPushButton#StemSoloVocButton:pressed {
++  background-color: #0284c7;
++  color: #ffffff;
++}
++
++#DeckRow_5_LoopCuesTransport WPushButton#StemSoloDrmButton {
++  background-color: #2b1f13;
++  color: #fcd34d;
++  border: 1px solid #b45309;
++  font-size: 9px;
++}
++#DeckRow_5_LoopCuesTransport WPushButton#StemSoloDrmButton:pressed {
++  background-color: #d97706;
++  color: #ffffff;
++}
++
++#DeckRow_5_LoopCuesTransport WPushButton#StemSoloInstButton {
++  background-color: #112818;
++  color: #86efac;
++  border: 1px solid #15803d;
++  font-size: 9px;
++}
++#DeckRow_5_LoopCuesTransport WPushButton#StemSoloInstButton:pressed {
++  background-color: #16a34a;
++  color: #ffffff;
++}
++
++/* ENGINE MODE TOGGLE (DSP vs AI) */
++#DeckRow_5_LoopCuesTransport WPushButton#StemModeButton[value="0"] {
++  background-color: #1f2937;
++  color: #38bdf8;
++  border: 1px solid #0284c7;
++  font-size: 10px;
++}
++#DeckRow_5_LoopCuesTransport WPushButton#StemModeButton[value="1"] {
++  background-color: #7c3aed;
++  color: #ffffff;
++  border: 1px solid #a855f7;
++  font-size: 10px;
++}
+diff --git a/src/engine/channels/enginedeck.cpp b/src/engine/channels/enginedeck.cpp
+index 71a926a..eaab073 100644
+--- a/src/engine/channels/enginedeck.cpp
++++ b/src/engine/channels/enginedeck.cpp
+@@ -5,6 +5,7 @@
+ #include "engine/effects/engineeffectsmanager.h"
+ #include "engine/enginebuffer.h"
+ #include "engine/enginepregain.h"
++#include "engine/stems/stemchannelprocessor.h"
+ #include "moc_enginedeck.cpp"
+ #include "util/sample.h"
+ 
+@@ -35,9 +36,11 @@ EngineDeck::EngineDeck(
+ 
+     m_pPregain = new EnginePregain(getGroup());
+     m_pBuffer = new EngineBuffer(getGroup(), pConfig, this, pMixingEngine);
++    m_pStemProcessor = std::make_unique<mixxx::StemChannelProcessor>(getGroup(), m_pBuffer);
+ }
+ 
+ EngineDeck::~EngineDeck() {
++    m_pStemProcessor.reset();
+     delete m_pPassing;
+     delete m_pBuffer;
+     delete m_pPregain;
+@@ -63,6 +66,11 @@ void EngineDeck::process(CSAMPLE* pOut, const int iBufferSize) {
+         m_pBuffer->process(pOut, iBufferSize);
+         m_pPregain->setSpeedAndScratching(m_pBuffer->getSpeed(), m_pBuffer->getScratching());
+         m_bPassthroughWasActive = false;
++
++        // Process stems separation
++        if (m_pStemProcessor) {
++            m_pStemProcessor->process(pOut, iBufferSize, m_pBuffer->getExactPlayPos());
++        }
+     }
+ 
+     // Apply pregain
+diff --git a/src/engine/channels/enginedeck.h b/src/engine/channels/enginedeck.h
+index ca87fed..ef94e6c 100644
+--- a/src/engine/channels/enginedeck.h
++++ b/src/engine/channels/enginedeck.h
+@@ -1,5 +1,6 @@
+ #pragma once
+ 
++#include <memory>
+ #include <QScopedPointer>
+ 
+ #include "preferences/usersettings.h"
+@@ -11,6 +12,10 @@ class EngineBuffer;
+ class EngineMixer;
+ class ControlPushButton;
+ 
++namespace mixxx {
++class StemChannelProcessor;
++}
++
+ class EngineDeck : public EngineChannel, public AudioDestination {
+     Q_OBJECT
+   public:
+@@ -73,6 +78,7 @@ class EngineDeck : public EngineChannel, public AudioDestination {
+     UserSettingsPointer m_pConfig;
+     EngineBuffer* m_pBuffer;
+     EnginePregain* m_pPregain;
++    std::unique_ptr<mixxx::StemChannelProcessor> m_pStemProcessor;
+ 
+     // Begin vinyl passthrough fields
+     QScopedPointer<ControlObject> m_pInputConfigured;
+diff --git a/src/engine/stems/stemcache.cpp b/src/engine/stems/stemcache.cpp
+new file mode 100644
+index 0000000..2602131
+--- /dev/null
++++ b/src/engine/stems/stemcache.cpp
+@@ -0,0 +1,143 @@
++#include "engine/stems/stemcache.h"
++
++#include <QDir>
++#include <QFile>
++#include <QFileInfo>
++#include <QCryptographicHash>
++#include <QDebug>
++
++namespace mixxx {
++
++namespace {
++constexpr char kMagic[8] = {'M', 'I', 'X', 'S', 'T', 'E', 'M', '1'};
++} // namespace
++
++QString StemCache::getCacheDir() {
++    QString dir = QDir::homePath() + "/Library/Application Support/Mixxx/stems_cache";
++    QDir().mkpath(dir);
++    return dir;
++}
++
++QString StemCache::getCachePath(TrackPointer pTrack) {
++    if (!pTrack) {
++        return QString();
++    }
++    QString key = pTrack->getLocation() + ":" + QString::number(pTrack->getFileInfo().sizeInBytes());
++    QByteArray hash = QCryptographicHash::hash(key.toUtf8(), QCryptographicHash::Sha1).toHex();
++    return getCacheDir() + "/" + hash + ".stems";
++}
++
++bool StemCache::hasCachedStems(TrackPointer pTrack) {
++    QString path = getCachePath(pTrack);
++    if (path.isEmpty()) {
++        return false;
++    }
++    QFileInfo fi(path);
++    return fi.exists() && fi.size() > static_cast<qint64>(sizeof(kMagic) + sizeof(uint32_t));
++}
++
++bool StemCache::loadFromCache(TrackPointer pTrack, StemTrackBuffer* pBuffer) {
++    if (!pTrack || !pBuffer) {
++        return false;
++    }
++
++    QString path = getCachePath(pTrack);
++    QFile file(path);
++    if (!file.open(QIODevice::ReadOnly)) {
++        return false;
++    }
++
++    char magic[8];
++    if (file.read(magic, sizeof(magic)) != sizeof(magic) ||
++        std::memcmp(magic, kMagic, sizeof(kMagic)) != 0) {
++        qDebug() << "StemCache: Invalid magic header in" << path;
++        return false;
++    }
++
++    uint32_t totalFrames = 0;
++    if (file.read(reinterpret_cast<char*>(&totalFrames), sizeof(uint32_t)) != sizeof(uint32_t) ||
++        totalFrames == 0) {
++        return false;
++    }
++
++    pBuffer->allocate(totalFrames);
++
++    const qint64 channelBytes = static_cast<qint64>(totalFrames) * sizeof(float);
++    std::vector<float> vocL(totalFrames);
++    std::vector<float> vocR(totalFrames);
++    std::vector<float> drumL(totalFrames);
++    std::vector<float> drumR(totalFrames);
++    std::vector<float> instL(totalFrames);
++    std::vector<float> instR(totalFrames);
++
++    if (file.read(reinterpret_cast<char*>(vocL.data()), channelBytes) != channelBytes ||
++        file.read(reinterpret_cast<char*>(vocR.data()), channelBytes) != channelBytes ||
++        file.read(reinterpret_cast<char*>(drumL.data()), channelBytes) != channelBytes ||
++        file.read(reinterpret_cast<char*>(drumR.data()), channelBytes) != channelBytes ||
++        file.read(reinterpret_cast<char*>(instL.data()), channelBytes) != channelBytes ||
++        file.read(reinterpret_cast<char*>(instR.data()), channelBytes) != channelBytes) {
++        qDebug() << "StemCache: Incomplete stem data read from" << path;
++        return false;
++    }
++
++    pBuffer->writeChunk(0, totalFrames,
++                        vocL.data(), vocR.data(),
++                        drumL.data(), drumR.data(),
++                        instL.data(), instR.data());
++
++    qDebug() << "StemCache: Successfully loaded real AI stems from cache for" << pTrack->getTitle()
++             << "(" << totalFrames << "frames)";
++    return true;
++}
++
++bool StemCache::saveToCache(TrackPointer pTrack, const StemTrackBuffer* pBuffer) {
++    if (!pTrack || !pBuffer || pBuffer->totalFrames() == 0) {
++        return false;
++    }
++
++    const uint32_t totalFrames = pBuffer->totalFrames();
++    if (pBuffer->framesReady() < totalFrames) {
++        return false; // Incomplete separation, don't cache
++    }
++
++    QString path = getCachePath(pTrack);
++    QFile file(path);
++    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
++        qDebug() << "StemCache: Failed to create cache file" << path;
++        return false;
++    }
++
++    if (file.write(kMagic, sizeof(kMagic)) != sizeof(kMagic) ||
++        file.write(reinterpret_cast<const char*>(&totalFrames), sizeof(uint32_t)) != sizeof(uint32_t)) {
++        return false;
++    }
++
++    const qint64 channelBytes = static_cast<qint64>(totalFrames) * sizeof(float);
++    std::vector<float> vocL(totalFrames);
++    std::vector<float> vocR(totalFrames);
++    std::vector<float> drumL(totalFrames);
++    std::vector<float> drumR(totalFrames);
++    std::vector<float> instL(totalFrames);
++    std::vector<float> instR(totalFrames);
++
++    pBuffer->readFrames(0, totalFrames,
++                        vocL.data(), vocR.data(),
++                        drumL.data(), drumR.data(),
++                        instL.data(), instR.data());
++
++    if (file.write(reinterpret_cast<const char*>(vocL.data()), channelBytes) != channelBytes ||
++        file.write(reinterpret_cast<const char*>(vocR.data()), channelBytes) != channelBytes ||
++        file.write(reinterpret_cast<const char*>(drumL.data()), channelBytes) != channelBytes ||
++        file.write(reinterpret_cast<const char*>(drumR.data()), channelBytes) != channelBytes ||
++        file.write(reinterpret_cast<const char*>(instL.data()), channelBytes) != channelBytes ||
++        file.write(reinterpret_cast<const char*>(instR.data()), channelBytes) != channelBytes) {
++        qDebug() << "StemCache: Write error saving stems cache to" << path;
++        return false;
++    }
++
++    qDebug() << "StemCache: Successfully saved real AI stems to cache for" << pTrack->getTitle()
++             << "at" << path;
++    return true;
++}
++
++} // namespace mixxx
+diff --git a/src/engine/stems/stemcache.h b/src/engine/stems/stemcache.h
+new file mode 100644
+index 0000000..a7d5b75
+--- /dev/null
++++ b/src/engine/stems/stemcache.h
+@@ -0,0 +1,26 @@
++#pragma once
++
++#include <QString>
++#include <memory>
++
++#include "track/track.h"
++#include "engine/stems/stemtrackbuffer.h"
++
++namespace mixxx {
++
++class StemCache {
++  public:
++    static QString getCacheDir();
++    static QString getCachePath(TrackPointer pTrack);
++
++    // Check if valid cached stems exist on disk for the given track
++    static bool hasCachedStems(TrackPointer pTrack);
++
++    // Load stems from disk into buffer. Returns true on success.
++    static bool loadFromCache(TrackPointer pTrack, StemTrackBuffer* pBuffer);
++
++    // Save stems from buffer to disk cache. Returns true on success.
++    static bool saveToCache(TrackPointer pTrack, const StemTrackBuffer* pBuffer);
++};
++
++} // namespace mixxx
+diff --git a/src/engine/stems/stemchannelprocessor.cpp b/src/engine/stems/stemchannelprocessor.cpp
+new file mode 100644
+index 0000000..44eb229
+--- /dev/null
++++ b/src/engine/stems/stemchannelprocessor.cpp
+@@ -0,0 +1,288 @@
++#include "engine/stems/stemchannelprocessor.h"
++#include "engine/stems/stemcache.h"
++#include "engine/enginebuffer.h"
++
++#include <cmath>
++#include <algorithm>
++
++namespace mixxx {
++
++StemChannelProcessor::StemChannelProcessor(const QString& group, EngineBuffer* pBuffer)
++        : m_group(group),
++          m_pEngineBuffer(pBuffer),
++          m_pStemTrackBuffer(std::make_shared<StemTrackBuffer>()) {
++    // 1. Controls
++    m_pStemsActive = std::make_unique<ControlPushButton>(ConfigKey(m_group, "stems_active"));
++    m_pStemsActive->setButtonMode(ControlPushButton::TOGGLE);
++    m_pStemsActive->set(1.0);
++
++    m_pStemVocalsEnabled = std::make_unique<ControlPushButton>(ConfigKey(m_group, "stem_vocals_enabled"));
++    m_pStemVocalsEnabled->setButtonMode(ControlPushButton::TOGGLE);
++    m_pStemVocalsEnabled->set(1.0);
++
++    m_pStemDrumsEnabled = std::make_unique<ControlPushButton>(ConfigKey(m_group, "stem_drums_enabled"));
++    m_pStemDrumsEnabled->setButtonMode(ControlPushButton::TOGGLE);
++    m_pStemDrumsEnabled->set(1.0);
++
++    m_pStemInstEnabled = std::make_unique<ControlPushButton>(ConfigKey(m_group, "stem_inst_enabled"));
++    m_pStemInstEnabled->setButtonMode(ControlPushButton::TOGGLE);
++    m_pStemInstEnabled->set(1.0);
++
++    m_pStemVocalsVolume = std::make_unique<ControlPotmeter>(ConfigKey(m_group, "stem_vocals_volume"), 0.0, 1.0);
++    m_pStemVocalsVolume->set(1.0);
++    m_pStemVocalsVolume->setDefaultValue(1.0);
++
++    m_pStemDrumsVolume = std::make_unique<ControlPotmeter>(ConfigKey(m_group, "stem_drums_volume"), 0.0, 1.0);
++    m_pStemDrumsVolume->set(1.0);
++    m_pStemDrumsVolume->setDefaultValue(1.0);
++
++    m_pStemInstVolume = std::make_unique<ControlPotmeter>(ConfigKey(m_group, "stem_inst_volume"), 0.0, 1.0);
++    m_pStemInstVolume->set(1.0);
++    m_pStemInstVolume->setDefaultValue(1.0);
++
++    m_pStemVocalsSolo = std::make_unique<ControlPushButton>(ConfigKey(m_group, "stem_vocals_solo"));
++    m_pStemVocalsSolo->setButtonMode(ControlPushButton::PUSH);
++    connect(m_pStemVocalsSolo.get(), &ControlPushButton::valueChanged,
++            this, &StemChannelProcessor::slotSoloVocals);
++
++    m_pStemDrumsSolo = std::make_unique<ControlPushButton>(ConfigKey(m_group, "stem_drums_solo"));
++    m_pStemDrumsSolo->setButtonMode(ControlPushButton::PUSH);
++    connect(m_pStemDrumsSolo.get(), &ControlPushButton::valueChanged,
++            this, &StemChannelProcessor::slotSoloDrums);
++
++    m_pStemInstSolo = std::make_unique<ControlPushButton>(ConfigKey(m_group, "stem_inst_solo"));
++    m_pStemInstSolo->setButtonMode(ControlPushButton::PUSH);
++    connect(m_pStemInstSolo.get(), &ControlPushButton::valueChanged,
++            this, &StemChannelProcessor::slotSoloInst);
++
++    m_pStemReset = std::make_unique<ControlPushButton>(ConfigKey(m_group, "stem_reset"));
++    m_pStemReset->setButtonMode(ControlPushButton::PUSH);
++    connect(m_pStemReset.get(), &ControlPushButton::valueChanged,
++            this, &StemChannelProcessor::slotResetStems);
++
++    m_pStemsSource = std::make_unique<ControlPushButton>(ConfigKey(m_group, "stems_source"));
++    m_pStemsSource->setButtonMode(ControlPushButton::TOGGLE);
++    m_pStemsSource->set(1.0); // 1 = Real Deep Neural Network AI by default!
++    connect(m_pStemsSource.get(), &ControlPushButton::valueChanged,
++            this, &StemChannelProcessor::slotSourceChanged);
++
++    m_pStemsProgress = std::make_unique<ControlObject>(ConfigKey(m_group, "stems_progress"));
++    m_pStemsProgress->set(0.0);
++
++    m_pStemsStatus = std::make_unique<ControlObject>(ConfigKey(m_group, "stems_status"));
++    m_pStemsStatus->set(0.0);
++
++    // 2. Subsystems
++    m_dspIsolator.init(44100.0);
++
++    m_pWorkerThread = std::make_unique<StemWorkerThread>(
++            m_pStemTrackBuffer,
++            m_pStemsProgress.get(),
++            m_pStemsStatus.get());
++
++    if (m_pEngineBuffer) {
++        connect(m_pEngineBuffer, &EngineBuffer::trackLoaded,
++                this, &StemChannelProcessor::slotTrackLoaded);
++    }
++}
++
++StemChannelProcessor::~StemChannelProcessor() {
++    if (m_pWorkerThread) {
++        m_pWorkerThread->stop();
++    }
++}
++
++void StemChannelProcessor::slotSoloVocals(double v) {
++    if (v > 0.0) {
++        m_pStemVocalsEnabled->set(1.0);
++        m_pStemDrumsEnabled->set(0.0);
++        m_pStemInstEnabled->set(0.0);
++    }
++}
++
++void StemChannelProcessor::slotSoloDrums(double v) {
++    if (v > 0.0) {
++        m_pStemVocalsEnabled->set(0.0);
++        m_pStemDrumsEnabled->set(1.0);
++        m_pStemInstEnabled->set(0.0);
++    }
++}
++
++void StemChannelProcessor::slotSoloInst(double v) {
++    if (v > 0.0) {
++        m_pStemVocalsEnabled->set(0.0);
++        m_pStemDrumsEnabled->set(0.0);
++        m_pStemInstEnabled->set(1.0);
++    }
++}
++
++void StemChannelProcessor::slotResetStems(double v) {
++    if (v > 0.0) {
++        m_pStemVocalsEnabled->set(1.0);
++        m_pStemDrumsEnabled->set(1.0);
++        m_pStemInstEnabled->set(1.0);
++        m_pStemVocalsVolume->set(1.0);
++        m_pStemDrumsVolume->set(1.0);
++        m_pStemInstVolume->set(1.0);
++    }
++}
++
++void StemChannelProcessor::slotSourceChanged(double v) {
++    if (v >= 0.5 && m_pEngineBuffer) {
++        TrackPointer pTrack = m_pEngineBuffer->getLoadedTrack();
++        if (pTrack) {
++            if (StemCache::hasCachedStems(pTrack)) {
++                if (StemCache::loadFromCache(pTrack, m_pStemTrackBuffer.get())) {
++                    m_pStemsProgress->set(1.0);
++                    m_pStemsStatus->set(2.0); // 2 = Ready!
++                    return;
++                }
++            }
++            m_pWorkerThread->loadTrack(pTrack);
++        }
++    }
++}
++
++void StemChannelProcessor::slotTrackLoaded(TrackPointer pNewTrack, TrackPointer pOldTrack) {
++    Q_UNUSED(pOldTrack);
++    m_pStemTrackBuffer->clear();
++    m_pStemsProgress->set(0.0);
++    m_pStemsStatus->set(0.0);
++
++    if (pNewTrack) {
++        // 1. Instant load from disk cache if this track was previously separated
++        if (StemCache::hasCachedStems(pNewTrack)) {
++            if (StemCache::loadFromCache(pNewTrack, m_pStemTrackBuffer.get())) {
++                m_pStemsProgress->set(1.0);
++                m_pStemsStatus->set(2.0); // 2 = AI Stems Ready!
++                qDebug() << "StemChannelProcessor: Real AI Stems loaded instantly from cache for"
++                         << pNewTrack->getTitle();
++                return;
++            }
++        }
++
++        // 2. Otherwise start background AI neural network separation immediately
++        if (m_pStemsSource->get() >= 0.5) {
++            m_pWorkerThread->loadTrack(pNewTrack);
++        }
++    } else {
++        m_pWorkerThread->stop();
++    }
++}
++
++void StemChannelProcessor::process(CSAMPLE* pInOut, int iBufferSize, audio::FramePos playPos) {
++    if (!pInOut || iBufferSize <= 0) {
++        return;
++    }
++
++    if (!m_pStemsActive->toBool()) {
++        return; // Stems bypassed
++    }
++
++    const double vocGain = m_pStemVocalsEnabled->toBool() ? m_pStemVocalsVolume->get() : 0.0;
++    const double drumGain = m_pStemDrumsEnabled->toBool() ? m_pStemDrumsVolume->get() : 0.0;
++    const double instGain = m_pStemInstEnabled->toBool() ? m_pStemInstVolume->get() : 0.0;
++
++    // Fast path: if all gains are practically unity, skip processing completely
++    if (std::abs(vocGain - 1.0) < 0.0001 &&
++        std::abs(drumGain - 1.0) < 0.0001 &&
++        std::abs(instGain - 1.0) < 0.0001) {
++        return;
++    }
++
++    const int numFrames = iBufferSize / 2;
++
++    // Check if ML AI stems are requested and ready for the current frame
++    bool usedMlStems = false;
++    if (m_pStemsSource->get() >= 0.5 && playPos.isValid()) {
++        const double reportedPos = playPos.value();
++        if (reportedPos >= 0.0) {
++            const double speed = m_pEngineBuffer ? m_pEngineBuffer->getSpeed() : 1.0;
++            const double effectiveSpeed = (speed != 0.0) ? speed : 1.0;
++            const double framesProcessed = numFrames * effectiveSpeed;
++            // reportedPos is at the end of the audio buffer just scaled into pInOut
++            const double startPos = std::max(0.0, reportedPos - framesProcessed);
++            const uint32_t startFrame = static_cast<uint32_t>(startPos);
++
++            if (std::abs(effectiveSpeed - 1.0) < 0.001) {
++                // 1:1 playback speed - direct sample copy
++                if (m_pStemTrackBuffer->isRangeReady(startFrame, static_cast<uint32_t>(numFrames))) {
++                    if (m_scratchVocL.size() < static_cast<size_t>(numFrames)) {
++                        m_scratchVocL.resize(numFrames);
++                        m_scratchVocR.resize(numFrames);
++                        m_scratchDrumL.resize(numFrames);
++                        m_scratchDrumR.resize(numFrames);
++                        m_scratchInstL.resize(numFrames);
++                        m_scratchInstR.resize(numFrames);
++                    }
++
++                    m_pStemTrackBuffer->readFrames(
++                            startFrame, static_cast<uint32_t>(numFrames),
++                            m_scratchVocL.data(), m_scratchVocR.data(),
++                            m_scratchDrumL.data(), m_scratchDrumR.data(),
++                            m_scratchInstL.data(), m_scratchInstR.data());
++
++                    for (int i = 0; i < numFrames; ++i) {
++                        const double out_l = vocGain * m_scratchVocL[i] +
++                                             drumGain * m_scratchDrumL[i] +
++                                             instGain * m_scratchInstL[i];
++                        const double out_r = vocGain * m_scratchVocR[i] +
++                                             drumGain * m_scratchDrumR[i] +
++                                             instGain * m_scratchInstR[i];
++                        pInOut[2 * i] = static_cast<CSAMPLE>(out_l);
++                        pInOut[2 * i + 1] = static_cast<CSAMPLE>(out_r);
++                    }
++                    usedMlStems = true;
++                }
++            } else if (effectiveSpeed > 0.0) {
++                // Pitch/tempo altered - linear interpolation across stem frames
++                const uint32_t neededFrames = static_cast<uint32_t>(std::ceil(framesProcessed)) + 2;
++                if (m_pStemTrackBuffer->isRangeReady(startFrame, neededFrames)) {
++                    if (m_scratchVocL.size() < neededFrames) {
++                        m_scratchVocL.resize(neededFrames);
++                        m_scratchVocR.resize(neededFrames);
++                        m_scratchDrumL.resize(neededFrames);
++                        m_scratchDrumR.resize(neededFrames);
++                        m_scratchInstL.resize(neededFrames);
++                        m_scratchInstR.resize(neededFrames);
++                    }
++
++                    m_pStemTrackBuffer->readFrames(
++                            startFrame, neededFrames,
++                            m_scratchVocL.data(), m_scratchVocR.data(),
++                            m_scratchDrumL.data(), m_scratchDrumR.data(),
++                            m_scratchInstL.data(), m_scratchInstR.data());
++
++                    for (int i = 0; i < numFrames; ++i) {
++                        const double posInChunk = i * effectiveSpeed;
++                        const uint32_t idx0 = static_cast<uint32_t>(posInChunk);
++                        const uint32_t idx1 = std::min(idx0 + 1, neededFrames - 1);
++                        const float frac = static_cast<float>(posInChunk - idx0);
++
++                        const float vl = m_scratchVocL[idx0] + frac * (m_scratchVocL[idx1] - m_scratchVocL[idx0]);
++                        const float vr = m_scratchVocR[idx0] + frac * (m_scratchVocR[idx1] - m_scratchVocR[idx0]);
++                        const float dl = m_scratchDrumL[idx0] + frac * (m_scratchDrumL[idx1] - m_scratchDrumL[idx0]);
++                        const float dr = m_scratchDrumR[idx0] + frac * (m_scratchDrumR[idx1] - m_scratchDrumR[idx0]);
++                        const float il = m_scratchInstL[idx0] + frac * (m_scratchInstL[idx1] - m_scratchInstL[idx0]);
++                        const float ir = m_scratchInstR[idx0] + frac * (m_scratchInstR[idx1] - m_scratchInstR[idx0]);
++
++                        const double out_l = vocGain * vl + drumGain * dl + instGain * il;
++                        const double out_r = vocGain * vr + drumGain * dr + instGain * ir;
++                        pInOut[2 * i] = static_cast<CSAMPLE>(out_l);
++                        pInOut[2 * i + 1] = static_cast<CSAMPLE>(out_r);
++                    }
++                    usedMlStems = true;
++                }
++            }
++        }
++    }
++
++    // High-fidelity real-time 4th-order Linkwitz-Riley stem isolator (zero-latency, transparent sum)
++    if (!usedMlStems) {
++        m_dspIsolator.process(pInOut, numFrames, vocGain, drumGain, instGain);
++    }
++}
++
++} // namespace mixxx
++
++#include "moc_stemchannelprocessor.cpp"
+diff --git a/src/engine/stems/stemchannelprocessor.h b/src/engine/stems/stemchannelprocessor.h
+new file mode 100644
+index 0000000..2492ebc
+--- /dev/null
++++ b/src/engine/stems/stemchannelprocessor.h
+@@ -0,0 +1,73 @@
++#pragma once
++
++#include <QObject>
++#include <memory>
++
++#include "audio/frame.h"
++#include "control/controlobject.h"
++#include "control/controlpushbutton.h"
++#include "control/controlpotmeter.h"
++#include "engine/stems/stemdspisolator.h"
++#include "engine/stems/stemtrackbuffer.h"
++#include "engine/stems/stemworkerthread.h"
++#include "track/track.h"
++
++class EngineBuffer;
++
++namespace mixxx {
++
++class StemChannelProcessor : public QObject {
++    Q_OBJECT
++  public:
++    StemChannelProcessor(const QString& group, EngineBuffer* pBuffer);
++    ~StemChannelProcessor() override;
++
++    // Called on every audio callback in EngineDeck::process
++    void process(CSAMPLE* pInOut, int iBufferSize, audio::FramePos playPos);
++
++  public slots:
++    void slotSoloVocals(double v);
++    void slotSoloDrums(double v);
++    void slotSoloInst(double v);
++    void slotResetStems(double v);
++    void slotSourceChanged(double v);
++    void slotTrackLoaded(TrackPointer pNewTrack, TrackPointer pOldTrack);
++
++  private:
++    QString m_group;
++    EngineBuffer* m_pEngineBuffer;
++
++    // Stem Controls
++    std::unique_ptr<ControlPushButton> m_pStemsActive;
++    std::unique_ptr<ControlPushButton> m_pStemVocalsEnabled;
++    std::unique_ptr<ControlPushButton> m_pStemDrumsEnabled;
++    std::unique_ptr<ControlPushButton> m_pStemInstEnabled;
++
++    std::unique_ptr<ControlPotmeter> m_pStemVocalsVolume;
++    std::unique_ptr<ControlPotmeter> m_pStemDrumsVolume;
++    std::unique_ptr<ControlPotmeter> m_pStemInstVolume;
++
++    std::unique_ptr<ControlPushButton> m_pStemVocalsSolo;
++    std::unique_ptr<ControlPushButton> m_pStemDrumsSolo;
++    std::unique_ptr<ControlPushButton> m_pStemInstSolo;
++    std::unique_ptr<ControlPushButton> m_pStemReset;
++
++    std::unique_ptr<ControlPushButton> m_pStemsSource;
++    std::unique_ptr<ControlObject> m_pStemsProgress;
++    std::unique_ptr<ControlObject> m_pStemsStatus;
++
++    // Subsystems
++    StemDspIsolator m_dspIsolator;
++    std::shared_ptr<StemTrackBuffer> m_pStemTrackBuffer;
++    std::unique_ptr<StemWorkerThread> m_pWorkerThread;
++
++    // Scratch buffers for ML stem mixing
++    std::vector<float> m_scratchVocL;
++    std::vector<float> m_scratchVocR;
++    std::vector<float> m_scratchDrumL;
++    std::vector<float> m_scratchDrumR;
++    std::vector<float> m_scratchInstL;
++    std::vector<float> m_scratchInstR;
++};
++
++} // namespace mixxx
+diff --git a/src/engine/stems/stemdspisolator.cpp b/src/engine/stems/stemdspisolator.cpp
+new file mode 100644
+index 0000000..dc27ae2
+--- /dev/null
++++ b/src/engine/stems/stemdspisolator.cpp
+@@ -0,0 +1,251 @@
++#include "engine/stems/stemdspisolator.h"
++
++#include <cmath>
++#include <algorithm>
++
++namespace mixxx {
++
++namespace {
++constexpr double kLowCrossoverHz = 220.0;
++constexpr double kHighCrossoverHz = 3200.0;
++constexpr double kPi = 3.14159265358979323846;
++} // namespace
++
++StemDspIsolator::StemDspIsolator() {
++    init(44100.0);
++}
++
++void StemDspIsolator::init(double sampleRate) {
++    if (sampleRate < 8000.0) {
++        sampleRate = 44100.0;
++    }
++    m_sampleRate = sampleRate;
++
++    // 1. Low Crossover SVF coefficients (Butterworth Q = 1/sqrt(2) -> k = sqrt(2))
++    m_k_low = std::sqrt(2.0);
++    double g_low = std::tan(kPi * kLowCrossoverHz / m_sampleRate);
++    m_a1_low = 1.0 / (1.0 + g_low * (g_low + m_k_low));
++    m_a2_low = g_low * m_a1_low;
++    m_a3_low = g_low * m_a2_low;
++
++    // 2. High Crossover SVF coefficients
++    m_k_high = std::sqrt(2.0);
++    double g_high = std::tan(kPi * kHighCrossoverHz / m_sampleRate);
++    m_a1_high = 1.0 / (1.0 + g_high * (g_high + m_k_high));
++    m_a2_high = g_high * m_a1_high;
++    m_a3_high = g_high * m_a2_high;
++
++    // 3. Smoothing coefficients
++    // Power tracker: fast attack (3 ms) to grab vocal immediately, smooth decay (25 ms) across cycles
++    m_alphaPowerAtk = std::exp(-1.0 / (0.003 * m_sampleRate));
++    m_alphaPowerDec = std::exp(-1.0 / (0.025 * m_sampleRate));
++
++    // Ratio smoother: fast attack (3 ms), smooth decay (15 ms)
++    m_alphaSmoothAtk = std::exp(-1.0 / (0.003 * m_sampleRate));
++    m_alphaSmoothDec = std::exp(-1.0 / (0.015 * m_sampleRate));
++
++    // Transient detector smoothing
++    m_alphaFastAtk = std::exp(-1.0 / (0.0005 * m_sampleRate)); // 0.5 ms
++    m_alphaFastDec = std::exp(-1.0 / (0.025 * m_sampleRate));  // 25 ms
++    m_alphaSlowAtk = std::exp(-1.0 / (0.005 * m_sampleRate));  // 5 ms
++    m_alphaSlowDec = std::exp(-1.0 / (0.120 * m_sampleRate));  // 120 ms
++    m_alphaTransient = std::exp(-1.0 / (0.008 * m_sampleRate));// 8 ms
++
++    // Reset filters and states
++    m_svfLow1.reset();
++    m_svfLow2.reset();
++    m_svfHigh1.reset();
++    m_svfHigh2.reset();
++
++    m_powerMidM = 0.0;
++    m_powerMidS = 0.0;
++    m_powerHighM = 0.0;
++    m_powerHighS = 0.0;
++
++    m_smoothCenter = 0.0;
++    m_smoothHighCenter = 0.0;
++    m_smoothTransient = 0.0;
++
++    m_fastMid = 0.0;
++    m_slowMid = 0.0;
++}
++
++void StemDspIsolator::process(
++        CSAMPLE* pInOut,
++        int numFrames,
++        double vocalsGain,
++        double drumsGain,
++        double instGain) {
++    if (!pInOut || numFrames <= 0) {
++        return;
++    }
++
++    // Fast bit-exact bypass if all gains are practically unity
++    if (std::abs(vocalsGain - 1.0) < 0.0001 &&
++        std::abs(drumsGain - 1.0) < 0.0001 &&
++        std::abs(instGain - 1.0) < 0.0001) {
++        return;
++    }
++
++    for (int i = 0; i < numFrames; ++i) {
++        const double in_l = static_cast<double>(pInOut[2 * i]);
++        const double in_r = static_cast<double>(pInOut[2 * i + 1]);
++
++        // =====================================================================
++        // Step 1: 4th-Order Linkwitz-Riley Low Crossover (220 Hz)
++        // Two cascaded Butterworth stages give 24 dB/octave slope for clean,
++        // punchy bass isolation without any bleed into the mid vocal range.
++        // =====================================================================
++        double lp1_l, lp1_r, hp1_l, hp1_r;
++        m_svfLow1.step(in_l, in_r, m_a1_low, m_a2_low, m_a3_low, m_k_low,
++                       lp1_l, lp1_r, hp1_l, hp1_r);
++
++        double low_l, low_r, hp2_l, hp2_r;
++        m_svfLow2.step(lp1_l, lp1_r, m_a1_low, m_a2_low, m_a3_low, m_k_low,
++                       low_l, low_r, hp2_l, hp2_r);
++
++        // Exact complementary flat-magnitude sum
++        const double midhigh_l = in_l - low_l;
++        const double midhigh_r = in_r - low_r;
++
++        // =====================================================================
++        // Step 2: 4th-Order Linkwitz-Riley High Crossover (3200 Hz)
++        // Splits midhigh into mid (220 Hz - 3200 Hz) and high (> 3200 Hz).
++        // =====================================================================
++        double lp3_l, lp3_r, hp3_l, hp3_r;
++        m_svfHigh1.step(midhigh_l, midhigh_r, m_a1_high, m_a2_high, m_a3_high, m_k_high,
++                        lp3_l, lp3_r, hp3_l, hp3_r);
++
++        double mid_l, mid_r, hp4_l, hp4_r;
++        m_svfHigh2.step(lp3_l, lp3_r, m_a1_high, m_a2_high, m_a3_high, m_k_high,
++                        mid_l, mid_r, hp4_l, hp4_r);
++
++        const double high_l = midhigh_l - mid_l;
++        const double high_r = midhigh_r - mid_r;
++
++        // =====================================================================
++        // Step 3: Mid-Band Spatial Vocal Extraction (Smoothed Power Follower)
++        // Uses RMS leaky power averaging over 25ms to completely eliminate
++        // sample-rate chatter and intermodulation buzzing.
++        // =====================================================================
++        const double mid_m = (mid_l + mid_r) * 0.5;
++        const double mid_s = (mid_l - mid_r) * 0.5;
++
++        const double inst_p_m = mid_m * mid_m;
++        const double inst_p_s = mid_s * mid_s;
++        if (inst_p_m > m_powerMidM) {
++            m_powerMidM = m_alphaPowerAtk * m_powerMidM + (1.0 - m_alphaPowerAtk) * inst_p_m;
++        } else {
++            m_powerMidM = m_alphaPowerDec * m_powerMidM + (1.0 - m_alphaPowerDec) * inst_p_m;
++        }
++
++        if (inst_p_s > m_powerMidS) {
++            m_powerMidS = m_alphaPowerAtk * m_powerMidS + (1.0 - m_alphaPowerAtk) * inst_p_s;
++        } else {
++            m_powerMidS = m_alphaPowerDec * m_powerMidS + (1.0 - m_alphaPowerDec) * inst_p_s;
++        }
++
++        double targetCenter = 0.0;
++        const double midTotalPower = m_powerMidM + m_powerMidS;
++        if (midTotalPower > 1e-8) {
++            double diff = m_powerMidM - 1.3 * m_powerMidS;
++            if (diff > 0.0) {
++                targetCenter = std::min(1.0, diff / (m_powerMidM + 1e-8));
++            }
++        }
++        if (targetCenter > m_smoothCenter) {
++            m_smoothCenter = m_alphaSmoothAtk * m_smoothCenter + (1.0 - m_alphaSmoothAtk) * targetCenter;
++        } else {
++            m_smoothCenter = m_alphaSmoothDec * m_smoothCenter + (1.0 - m_alphaSmoothDec) * targetCenter;
++        }
++
++        // =====================================================================
++        // Step 4: High-Band Vocal Presence / Air Extraction
++        // =====================================================================
++        const double high_m = (high_l + high_r) * 0.5;
++        const double high_s = (high_l - high_r) * 0.5;
++
++        const double high_p_m = high_m * high_m;
++        const double high_p_s = high_s * high_s;
++        if (high_p_m > m_powerHighM) {
++            m_powerHighM = m_alphaPowerAtk * m_powerHighM + (1.0 - m_alphaPowerAtk) * high_p_m;
++        } else {
++            m_powerHighM = m_alphaPowerDec * m_powerHighM + (1.0 - m_alphaPowerDec) * high_p_m;
++        }
++
++        if (high_p_s > m_powerHighS) {
++            m_powerHighS = m_alphaPowerAtk * m_powerHighS + (1.0 - m_alphaPowerAtk) * high_p_s;
++        } else {
++            m_powerHighS = m_alphaPowerDec * m_powerHighS + (1.0 - m_alphaPowerDec) * high_p_s;
++        }
++
++        double targetHighCenter = 0.0;
++        const double highTotalPower = m_powerHighM + m_powerHighS;
++        if (highTotalPower > 1e-8) {
++            double diff = m_powerHighM - 1.3 * m_powerHighS;
++            if (diff > 0.0) {
++                targetHighCenter = std::min(1.0, diff / (m_powerHighM + 1e-8));
++            }
++        }
++        if (targetHighCenter > m_smoothHighCenter) {
++            m_smoothHighCenter = m_alphaSmoothAtk * m_smoothHighCenter + (1.0 - m_alphaSmoothAtk) * targetHighCenter;
++        } else {
++            m_smoothHighCenter = m_alphaSmoothDec * m_smoothHighCenter + (1.0 - m_alphaSmoothDec) * targetHighCenter;
++        }
++
++        // =====================================================================
++        // Step 5: Drum Snare & Percussive Transient Follower
++        // =====================================================================
++        const double midEnergy = midTotalPower;
++        if (midEnergy > m_fastMid) {
++            m_fastMid = m_alphaFastAtk * m_fastMid + (1.0 - m_alphaFastAtk) * midEnergy;
++        } else {
++            m_fastMid = m_alphaFastDec * m_fastMid + (1.0 - m_alphaFastDec) * midEnergy;
++        }
++
++        if (midEnergy > m_slowMid) {
++            m_slowMid = m_alphaSlowAtk * m_slowMid + (1.0 - m_alphaSlowAtk) * midEnergy;
++        } else {
++            m_slowMid = m_alphaSlowDec * m_slowMid + (1.0 - m_alphaSlowDec) * midEnergy;
++        }
++
++        double targetTransient = 0.0;
++        if (m_fastMid > 1.35 * m_slowMid && m_fastMid > 1e-7) {
++            targetTransient = std::min(1.0, (m_fastMid - 1.35 * m_slowMid) / (m_fastMid + 1e-7));
++        }
++        m_smoothTransient = m_alphaTransient * m_smoothTransient + (1.0 - m_alphaTransient) * targetTransient;
++
++        // =====================================================================
++        // Step 6: Stem Separation Assembly
++        // =====================================================================
++        // Vocals: center-panned harmonic content, ducked during heavy snare hits
++        const double vocRejectDrums = 1.0 - 0.75 * m_smoothTransient;
++        const double voc_mid_m = m_smoothCenter * vocRejectDrums * mid_m;
++        const double voc_high_m = 0.45 * m_smoothHighCenter * vocRejectDrums * high_m;
++        const double voc_l = voc_mid_m + voc_high_m;
++        const double voc_r = voc_mid_m + voc_high_m;
++
++        // Drums: full low band (< 220 Hz kick/sub) + snare mid transients + cymbal high transients
++        const double drum_mid_m = m_smoothTransient * (mid_m - voc_mid_m);
++        const double drum_high_m = m_smoothTransient * (high_m - voc_high_m);
++        const double drum_high_s = m_smoothTransient * high_s;
++        const double drum_l = low_l + drum_mid_m + drum_high_m + drum_high_s;
++        const double drum_r = low_r + drum_mid_m + drum_high_m - drum_high_s;
++
++        // Instruments: musical residual (synthesizers, guitars, pianos, stereo reverbs)
++        // By subtracting drums and vocals from input, unity sum is 100% mathematically conserved!
++        const double inst_l = in_l - drum_l - voc_l;
++        const double inst_r = in_r - drum_r - voc_r;
++
++        // =====================================================================
++        // Step 7: Apply Gains and Sum Output
++        // =====================================================================
++        const double out_l = vocalsGain * voc_l + drumsGain * drum_l + instGain * inst_l;
++        const double out_r = vocalsGain * voc_r + drumsGain * drum_r + instGain * inst_r;
++
++        pInOut[2 * i] = static_cast<CSAMPLE>(out_l);
++        pInOut[2 * i + 1] = static_cast<CSAMPLE>(out_r);
++    }
++}
++
++} // namespace mixxx
+diff --git a/src/engine/stems/stemdspisolator.h b/src/engine/stems/stemdspisolator.h
+new file mode 100644
+index 0000000..73913eb
+--- /dev/null
++++ b/src/engine/stems/stemdspisolator.h
+@@ -0,0 +1,103 @@
++#pragma once
++
++#include "util/types.h"
++#include "util/sample.h"
++
++#include <cmath>
++#include <algorithm>
++
++namespace mixxx {
++
++class StemDspIsolator {
++  public:
++    StemDspIsolator();
++    ~StemDspIsolator() = default;
++
++    void init(double sampleRate);
++
++    // Process a buffer of interleaved stereo samples in place.
++    // numFrames is the number of stereo frames (iBufferSize / 2).
++    void process(
++            CSAMPLE* pInOut,
++            int numFrames,
++            double vocalsGain,
++            double drumsGain,
++            double instGain);
++
++  private:
++    // Cytomic SVF State for 2nd-order section
++    struct SvfSection {
++        double s1_l{0.0}, s2_l{0.0};
++        double s1_r{0.0}, s2_r{0.0};
++
++        inline void step(
++                double in_l, double in_r,
++                double a1, double a2, double a3, double k,
++                double& lp_l, double& lp_r,
++                double& hp_l, double& hp_r) {
++            // Left channel
++            double v3_l = in_l - s2_l;
++            double v1_l = a1 * s1_l + a2 * v3_l;
++            double v2_l = s2_l + a2 * s1_l + a3 * v3_l;
++            s1_l = 2.0 * v1_l - s1_l;
++            s2_l = 2.0 * v2_l - s2_l;
++            lp_l = v2_l;
++            hp_l = in_l - k * v1_l - v2_l;
++
++            // Right channel
++            double v3_r = in_r - s2_r;
++            double v1_r = a1 * s1_r + a2 * v3_r;
++            double v2_r = s2_r + a2 * s1_r + a3 * v3_r;
++            s1_r = 2.0 * v1_r - s1_r;
++            s2_r = 2.0 * v2_r - s2_r;
++            lp_r = v2_r;
++            hp_r = in_r - k * v1_r - v2_r;
++        }
++
++        void reset() {
++            s1_l = s2_l = 0.0;
++            s1_r = s2_r = 0.0;
++        }
++    };
++
++    double m_sampleRate{44100.0};
++
++    // Low Crossover (220 Hz) coefficients (Butterworth Q = 1/sqrt(2) -> k = sqrt(2))
++    double m_a1_low{0.0}, m_a2_low{0.0}, m_a3_low{0.0}, m_k_low{1.41421356};
++    SvfSection m_svfLow1;
++    SvfSection m_svfLow2; // Cascaded for 4th-order Linkwitz-Riley (24 dB/oct)
++
++    // High Crossover (3200 Hz) coefficients
++    double m_a1_high{0.0}, m_a2_high{0.0}, m_a3_high{0.0}, m_k_high{1.41421356};
++    SvfSection m_svfHigh1;
++    SvfSection m_svfHigh2; // Cascaded for 4th-order Linkwitz-Riley (24 dB/oct)
++
++    // Leaky RMS Power Trackers (asymmetrical attack/decay)
++    double m_powerMidM{0.0};
++    double m_powerMidS{0.0};
++    double m_powerHighM{0.0};
++    double m_powerHighS{0.0};
++
++    // Smooth panning & extraction ratios (interpolated to prevent any clicks or buzz)
++    double m_smoothCenter{0.0};
++    double m_smoothHighCenter{0.0};
++    double m_smoothTransient{0.0};
++
++    // Dual-envelope peak transient follower for drum snare/percussion detection
++    double m_fastMid{0.0};
++    double m_slowMid{0.0};
++
++    // Smoothing coefficients
++    double m_alphaPowerAtk{0.0};
++    double m_alphaPowerDec{0.0};
++    double m_alphaSmoothAtk{0.0};
++    double m_alphaSmoothDec{0.0};
++
++    double m_alphaFastAtk{0.0};
++    double m_alphaFastDec{0.0};
++    double m_alphaSlowAtk{0.0};
++    double m_alphaSlowDec{0.0};
++    double m_alphaTransient{0.0};
++};
++
++} // namespace mixxx
+diff --git a/src/engine/stems/stemseparator.cpp b/src/engine/stems/stemseparator.cpp
+new file mode 100644
+index 0000000..e0da5dc
+--- /dev/null
++++ b/src/engine/stems/stemseparator.cpp
+@@ -0,0 +1,504 @@
++#include "engine/stems/stemseparator.h"
++
++#ifdef MIXXX_HAS_ONNXRUNTIME
++#include <onnxruntime_cxx_api.h>
++#ifdef __APPLE__
++#include <coreml_provider_factory.h>
++#elif defined(__ANDROID__) || defined(ANDROID)
++#include <nnapi_provider_factory.h>
++#endif
++#endif
++
++#include <QDir>
++#include <QFileInfo>
++#include <QCoreApplication>
++#include <QStandardPaths>
++#include <QDebug>
++#include <cmath>
++#include <cstring>
++#include <thread>
++#include <algorithm>
++
++namespace mixxx {
++
++#ifdef MIXXX_HAS_ONNXRUNTIME
++
++namespace {
++const char* const kInputNames[] = {"mix"};
++const char* const kOutputNames[] = {"stems"};
++
++void configureSessionOptions(Ort::SessionOptions& options) {
++    options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
++
++#if defined(__ANDROID__) || defined(ANDROID)
++    // On mobile devices, dynamically clamp thread pool to 2-4 threads to prevent thermal throttling
++    const unsigned int hwThreads = std::thread::hardware_concurrency();
++    const unsigned int numThreads = std::max(2u, std::min(4u, hwThreads == 0 ? 2u : hwThreads));
++    options.SetIntraOpNumThreads(numThreads);
++
++    // Enable hardware NPU/GPU acceleration via Android NNAPI execution provider
++    try {
++        Ort::ThrowOnError(OrtSessionOptionsAppendExecutionProvider_Nnapi(options, 0));
++        qDebug() << "HTDemucsEngine: Android NNAPI hardware execution provider active";
++    } catch (const std::exception& e) {
++        qDebug() << "HTDemucsEngine: NNAPI execution provider fallback to CPU:" << e.what();
++    }
++#else
++    options.SetIntraOpNumThreads(8);
++#endif
++}
++
++QString findModelFile(const QString& filename) {
++#if defined(__ANDROID__) || defined(ANDROID)
++    // On Android, check if model is packaged in APK assets:/ and unpack to writable AppDataLocation
++    const QString assetPath = "assets:/models/" + filename;
++    if (QFile::exists(assetPath)) {
++        const QString destDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/models";
++        QDir().mkpath(destDir);
++        const QString destPath = destDir + "/" + filename;
++        if (!QFileInfo::exists(destPath)) {
++            QFile::copy(assetPath, destPath);
++        }
++        if (QFileInfo::exists(destPath)) {
++            return destPath;
++        }
++    }
++#endif
++
++    const QStringList searchDirs = {
++        QCoreApplication::applicationDirPath() + "/models",
++        QCoreApplication::applicationDirPath() + "/../Resources/models",
++        QDir::currentPath() + "/models",
++        QDir::currentPath(),
++        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/models",
++        QDir::homePath() + "/.mixxx/models",
++        QDir::homePath() + "/Library/Application Support/Mixxx/models",
++        "/usr/share/mixxx/models",
++        "/usr/local/share/mixxx/models"
++    };
++
++    for (const auto& dir : searchDirs) {
++        QString candidate = dir + "/" + filename;
++        if (QFileInfo::exists(candidate)) {
++            return candidate;
++        }
++    }
++    return QString();
++}
++} // namespace
++
++HTDemucsEngine& HTDemucsEngine::instance() {
++    static HTDemucsEngine* s_instance = new HTDemucsEngine();
++    return *s_instance;
++}
++
++HTDemucsEngine::HTDemucsEngine() {
++    // Build trapezoidal overlap-add window (flat center, linear crossfade edges)
++    m_window.assign(kSegmentSamples, 1.0f);
++    for (int i = 0; i < kOverlapSamples; ++i) {
++        const float fade = static_cast<float>(i) / static_cast<float>(kOverlapSamples);
++        m_window[i] = fade;
++        m_window[kSegmentSamples - 1 - i] = fade;
++    }
++}
++
++HTDemucsEngine::~HTDemucsEngine() {
++    finalize();
++}
++
++bool HTDemucsEngine::locateModel(QString* outPath) const {
++    // 1. Check for Fine-Tuned dual specialist models (Vocals + Drums)
++    const QString ftVoc = findModelFile("htdemucs_ft_vocals.onnx");
++    const QString ftDrum = findModelFile("htdemucs_ft_drums.onnx");
++    if (!ftVoc.isEmpty() && !ftDrum.isEmpty()) {
++        if (outPath) {
++            *outPath = ftVoc;
++        }
++        return true;
++    }
++
++    // 2. Check for base 4-stem model
++    const QString base = findModelFile("htdemucs.onnx");
++    if (!base.isEmpty()) {
++        if (outPath) {
++            *outPath = base;
++        }
++        return true;
++    }
++
++    return false;
++}
++
++bool HTDemucsEngine::isAvailable() {
++    return locateModel(nullptr);
++}
++
++bool HTDemucsEngine::isInitialized() const {
++    return m_bInitialized && (m_pSession != nullptr || (m_pSessionVoc != nullptr && m_pSessionDrum != nullptr));
++}
++
++bool HTDemucsEngine::initialize(const QString& customModelPath) {
++    std::lock_guard<std::recursive_mutex> lock(m_mutex);
++
++    if (isInitialized()) {
++        return true;
++    }
++
++    // Check for Fine-Tuned models first (SOTA quality)
++    const QString ftVocPath = findModelFile("htdemucs_ft_vocals.onnx");
++    const QString ftDrumPath = findModelFile("htdemucs_ft_drums.onnx");
++
++    if (customModelPath.isEmpty() && !ftVocPath.isEmpty() && !ftDrumPath.isEmpty()) {
++        try {
++            qDebug() << "HTDemucsEngine: Loading Fine-Tuned (HTDemucs-FT) ONNX specialist models...";
++            m_pEnv = std::make_unique<Ort::Env>(ORT_LOGGING_LEVEL_WARNING, "HTDemucsEngine");
++
++            Ort::SessionOptions sessionOptions;
++            configureSessionOptions(sessionOptions);
++
++            m_pSessionVoc = std::make_unique<Ort::Session>(
++                    *m_pEnv, ftVocPath.toUtf8().constData(), sessionOptions);
++            m_pSessionDrum = std::make_unique<Ort::Session>(
++                    *m_pEnv, ftDrumPath.toUtf8().constData(), sessionOptions);
++
++            m_pMemoryInfo = std::make_unique<Ort::MemoryInfo>(
++                    Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault));
++
++            m_bFineTuned = true;
++            m_bInitialized = true;
++            qDebug() << "HTDemucsEngine: Successfully initialized Fine-Tuned (HTDemucs-FT) models!";
++            return true;
++        } catch (const std::exception& e) {
++            qDebug() << "HTDemucsEngine: Failed loading FT models, falling back to base model:" << e.what();
++        }
++    }
++
++    QString modelPath = customModelPath;
++    if (modelPath.isEmpty() || !QFileInfo::exists(modelPath)) {
++        modelPath = findModelFile("htdemucs.onnx");
++        if (modelPath.isEmpty() || !QFileInfo::exists(modelPath)) {
++            qDebug() << "HTDemucsEngine: No htdemucs.onnx model found in system paths!";
++            return false;
++        }
++    }
++
++    try {
++        qDebug() << "HTDemucsEngine: Loading ONNX model from" << modelPath;
++        m_pEnv = std::make_unique<Ort::Env>(ORT_LOGGING_LEVEL_WARNING, "HTDemucsEngine");
++
++        Ort::SessionOptions sessionOptions;
++        configureSessionOptions(sessionOptions);
++
++        m_pSession = std::make_unique<Ort::Session>(
++                *m_pEnv,
++                modelPath.toUtf8().constData(),
++                sessionOptions);
++
++        m_pMemoryInfo = std::make_unique<Ort::MemoryInfo>(
++                Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault));
++
++        m_bInitialized = true;
++        m_bFineTuned = false;
++        qDebug() << "HTDemucsEngine: HTDemucs v4 ONNX model successfully loaded and initialized!";
++        return true;
++    } catch (const Ort::Exception& e) {
++        qDebug() << "HTDemucsEngine: ONNX initialization failed:" << e.what();
++        m_bInitialized = false;
++        return false;
++    } catch (const std::exception& e) {
++        qDebug() << "HTDemucsEngine: Initialization failed:" << e.what();
++        m_bInitialized = false;
++        return false;
++    }
++}
++
++bool HTDemucsEngine::separateSegment(
++        const float* in_l, const float* in_r,
++        float* drums_l, float* drums_r,
++        float* bass_l, float* bass_r,
++        float* other_l, float* other_r,
++        float* vocals_l, float* vocals_r) {
++    std::lock_guard<std::recursive_mutex> lock(m_mutex);
++
++    if (!m_bInitialized) {
++        if (!initialize()) {
++            return false;
++        }
++    }
++
++    try {
++        const int64_t N = kSegmentSamples;
++        const std::vector<int64_t> inputShape = {1, 2, N};
++
++        // Prepare planar stereo buffer: [Left channel (N), Right channel (N)]
++        std::vector<float> inputData(2 * N);
++        std::memcpy(&inputData[0], in_l, N * sizeof(float));
++        std::memcpy(&inputData[N], in_r, N * sizeof(float));
++
++        Ort::Value inputTensor = Ort::Value::CreateTensor<float>(
++                *m_pMemoryInfo,
++                inputData.data(), inputData.size(),
++                inputShape.data(), inputShape.size());
++
++        auto outputTensors = m_pSession->Run(
++                Ort::RunOptions{nullptr},
++                kInputNames, &inputTensor, 1,
++                kOutputNames, 1);
++
++        if (outputTensors.empty()) {
++            return false;
++        }
++
++        const float* outData = outputTensors[0].GetTensorData<float>();
++        // Output tensor shape is (1, 4, 2, 343980)
++        // Stems order: 0 = Drums, 1 = Bass, 2 = Other, 3 = Vocals
++        const size_t stemStride = 2 * N;
++
++        // Drums (stem 0)
++        if (drums_l) std::memcpy(drums_l, outData + 0 * stemStride, N * sizeof(float));
++        if (drums_r) std::memcpy(drums_r, outData + 0 * stemStride + N, N * sizeof(float));
++
++        // Bass (stem 1)
++        if (bass_l) std::memcpy(bass_l, outData + 1 * stemStride, N * sizeof(float));
++        if (bass_r) std::memcpy(bass_r, outData + 1 * stemStride + N, N * sizeof(float));
++
++        // Other (stem 2)
++        if (other_l) std::memcpy(other_l, outData + 2 * stemStride, N * sizeof(float));
++        if (other_r) std::memcpy(other_r, outData + 2 * stemStride + N, N * sizeof(float));
++
++        // Vocals (stem 3)
++        if (vocals_l) std::memcpy(vocals_l, outData + 3 * stemStride, N * sizeof(float));
++        if (vocals_r) std::memcpy(vocals_r, outData + 3 * stemStride + N, N * sizeof(float));
++
++        return true;
++    } catch (const Ort::Exception& e) {
++        qDebug() << "HTDemucsEngine: separateSegment failed:" << e.what();
++        return false;
++    }
++}
++
++bool HTDemucsEngine::separateSegment3Stem(
++        const float* in_l, const float* in_r,
++        float* voc_l, float* voc_r,
++        float* drum_l, float* drum_r,
++        float* inst_l, float* inst_r) {
++    std::lock_guard<std::recursive_mutex> lock(m_mutex);
++
++    if (!m_bInitialized) {
++        if (!initialize()) {
++            return false;
++        }
++    }
++
++    const int64_t N = kSegmentSamples;
++
++    // High-Fidelity Fine-Tuned (HTDemucs-FT) Path
++    if (m_bFineTuned && m_pSessionVoc && m_pSessionDrum) {
++        try {
++            const std::vector<int64_t> inputShape = {1, 2, N};
++            std::vector<float> inputData(2 * N);
++            std::memcpy(&inputData[0], in_l, N * sizeof(float));
++            std::memcpy(&inputData[N], in_r, N * sizeof(float));
++
++            // 1. Separate Vocals with Fine-Tuned specialist
++            Ort::Value inTensorVoc = Ort::Value::CreateTensor<float>(
++                    *m_pMemoryInfo,
++                    inputData.data(), inputData.size(),
++                    inputShape.data(), inputShape.size());
++
++            auto outVoc = m_pSessionVoc->Run(
++                    Ort::RunOptions{nullptr}, kInputNames, &inTensorVoc, 1, kOutputNames, 1);
++            if (outVoc.empty()) {
++                return false;
++            }
++
++            const float* outVocData = outVoc[0].GetTensorData<float>();
++            // Row 3 is fine-tuned vocals
++            if (voc_l) std::memcpy(voc_l, outVocData + 3 * (2 * N), N * sizeof(float));
++            if (voc_r) std::memcpy(voc_r, outVocData + 3 * (2 * N) + N, N * sizeof(float));
++
++            // 2. Separate Drums with Fine-Tuned specialist
++            Ort::Value inTensorDrum = Ort::Value::CreateTensor<float>(
++                    *m_pMemoryInfo,
++                    inputData.data(), inputData.size(),
++                    inputShape.data(), inputShape.size());
++
++            auto outDrum = m_pSessionDrum->Run(
++                    Ort::RunOptions{nullptr}, kInputNames, &inTensorDrum, 1, kOutputNames, 1);
++            if (outDrum.empty()) {
++                return false;
++            }
++
++            const float* outDrumData = outDrum[0].GetTensorData<float>();
++            // Row 0 is fine-tuned drums
++            if (drum_l) std::memcpy(drum_l, outDrumData + 0 * (2 * N), N * sizeof(float));
++            if (drum_r) std::memcpy(drum_r, outDrumData + 0 * (2 * N) + N, N * sizeof(float));
++
++            // 3. Perfect Transparent Residual Instruments: Inst = Mix - (Voc + Drum)
++            if (inst_l) {
++                for (int64_t i = 0; i < N; ++i) {
++                    inst_l[i] = in_l[i] - (voc_l ? voc_l[i] : 0.0f) - (drum_l ? drum_l[i] : 0.0f);
++                }
++            }
++            if (inst_r) {
++                for (int64_t i = 0; i < N; ++i) {
++                    inst_r[i] = in_r[i] - (voc_r ? voc_r[i] : 0.0f) - (drum_r ? drum_r[i] : 0.0f);
++                }
++            }
++            return true;
++        } catch (const Ort::Exception& e) {
++            qDebug() << "HTDemucsEngine: Fine-tuned separateSegment3Stem failed:" << e.what();
++            return false;
++        }
++    }
++
++    std::vector<float> bass_l(N), bass_r(N);
++    std::vector<float> other_l(N), other_r(N);
++
++    bool ok = separateSegment(
++            in_l, in_r,
++            drum_l, drum_r,
++            bass_l.data(), bass_r.data(),
++            other_l.data(), other_r.data(),
++            voc_l, voc_r);
++
++    if (!ok) {
++        return false;
++    }
++
++    // Combine Bass + Other into Instruments
++    if (inst_l) {
++        for (int i = 0; i < N; ++i) {
++            inst_l[i] = bass_l[i] + other_l[i];
++        }
++    }
++    if (inst_r) {
++        for (int i = 0; i < N; ++i) {
++            inst_r[i] = bass_r[i] + other_r[i];
++        }
++    }
++    return true;
++}
++
++bool HTDemucsEngine::separateTrack(
++        uint32_t totalFrames,
++        const float* in_l, const float* in_r,
++        float* voc_l, float* voc_r,
++        float* drum_l, float* drum_r,
++        float* inst_l, float* inst_r,
++        std::function<void(double)> progressCallback,
++        std::atomic<bool>* pCancelFlag) {
++    if (totalFrames == 0 || !in_l || !in_r) {
++        return false;
++    }
++
++    // Initialize output buffers to zero
++    std::memset(voc_l, 0, totalFrames * sizeof(float));
++    std::memset(voc_r, 0, totalFrames * sizeof(float));
++    std::memset(drum_l, 0, totalFrames * sizeof(float));
++    std::memset(drum_r, 0, totalFrames * sizeof(float));
++    std::memset(inst_l, 0, totalFrames * sizeof(float));
++    std::memset(inst_r, 0, totalFrames * sizeof(float));
++
++    std::vector<float> weight(totalFrames, 0.0f);
++
++    const uint32_t stride = kStrideSamples;
++    const uint32_t nChunks = (totalFrames + stride - 1) / stride;
++
++    std::vector<float> chunkInL(kSegmentSamples, 0.0f);
++    std::vector<float> chunkInR(kSegmentSamples, 0.0f);
++    std::vector<float> chunkVocL(kSegmentSamples, 0.0f);
++    std::vector<float> chunkVocR(kSegmentSamples, 0.0f);
++    std::vector<float> chunkDrumL(kSegmentSamples, 0.0f);
++    std::vector<float> chunkDrumR(kSegmentSamples, 0.0f);
++    std::vector<float> chunkInstL(kSegmentSamples, 0.0f);
++    std::vector<float> chunkInstR(kSegmentSamples, 0.0f);
++
++    for (uint32_t chunkIdx = 0; chunkIdx < nChunks; ++chunkIdx) {
++        if (pCancelFlag && pCancelFlag->load(std::memory_order_relaxed)) {
++            return false;
++        }
++
++        const uint32_t start = chunkIdx * stride;
++        const uint32_t end = std::min(start + static_cast<uint32_t>(kSegmentSamples), totalFrames);
++        const uint32_t chunkLen = end - start;
++
++        // Copy input with zero-padding if less than kSegmentSamples
++        std::fill(chunkInL.begin(), chunkInL.end(), 0.0f);
++        std::fill(chunkInR.begin(), chunkInR.end(), 0.0f);
++        std::memcpy(chunkInL.data(), in_l + start, chunkLen * sizeof(float));
++        std::memcpy(chunkInR.data(), in_r + start, chunkLen * sizeof(float));
++
++        bool ok = separateSegment3Stem(
++                chunkInL.data(), chunkInR.data(),
++                chunkVocL.data(), chunkVocR.data(),
++                chunkDrumL.data(), chunkDrumR.data(),
++                chunkInstL.data(), chunkInstR.data());
++
++        if (!ok) {
++            return false;
++        }
++
++        // Overlap-add into output buffers
++        for (uint32_t i = 0; i < chunkLen; ++i) {
++            const float w = m_window[i];
++            const uint32_t dest = start + i;
++            voc_l[dest] += chunkVocL[i] * w;
++            voc_r[dest] += chunkVocR[i] * w;
++            drum_l[dest] += chunkDrumL[i] * w;
++            drum_r[dest] += chunkDrumR[i] * w;
++            inst_l[dest] += chunkInstL[i] * w;
++            inst_r[dest] += chunkInstR[i] * w;
++            weight[dest] += w;
++        }
++
++        if (progressCallback) {
++            progressCallback(static_cast<double>(chunkIdx + 1) / nChunks);
++        }
++    }
++
++    // Normalize by overlap weight
++    for (uint32_t i = 0; i < totalFrames; ++i) {
++        const float w = std::max(weight[i], 1e-6f);
++        voc_l[i] /= w;
++        voc_r[i] /= w;
++        drum_l[i] /= w;
++        drum_r[i] /= w;
++        inst_l[i] /= w;
++        inst_r[i] /= w;
++    }
++
++    return true;
++}
++
++void HTDemucsEngine::finalize() {
++    m_pSessionVoc.reset();
++    m_pSessionDrum.reset();
++    m_pSession.reset();
++    m_pMemoryInfo.reset();
++    m_pEnv.reset();
++    m_bInitialized = false;
++    m_bFineTuned = false;
++}
++
++#else // !MIXXX_HAS_ONNXRUNTIME
++
++HTDemucsEngine& HTDemucsEngine::instance() {
++    static HTDemucsEngine* s_instance = new HTDemucsEngine();
++    return *s_instance;
++}
++
++HTDemucsEngine::HTDemucsEngine() {}
++HTDemucsEngine::~HTDemucsEngine() {}
++bool HTDemucsEngine::locateModel(QString*) const { return false; }
++bool HTDemucsEngine::isAvailable() { return false; }
++bool HTDemucsEngine::isInitialized() const { return false; }
++bool HTDemucsEngine::initialize(const QString&) { return false; }
++bool HTDemucsEngine::separateSegment(const float*, const float*, float*, float*, float*, float*, float*, float*, float*, float*) { return false; }
++bool HTDemucsEngine::separateSegment3Stem(const float*, const float*, float*, float*, float*, float*, float*, float*) { return false; }
++bool HTDemucsEngine::separateTrack(uint32_t, const float*, const float*, float*, float*, float*, float*, float*, float*, std::function<void(double)>, std::atomic<bool>*) { return false; }
++void HTDemucsEngine::finalize() {}
++
++#endif // MIXXX_HAS_ONNXRUNTIME
++
++} // namespace mixxx
+diff --git a/src/engine/stems/stemseparator.h b/src/engine/stems/stemseparator.h
+new file mode 100644
+index 0000000..2b5873c
+--- /dev/null
++++ b/src/engine/stems/stemseparator.h
+@@ -0,0 +1,85 @@
++#pragma once
++
++#include <QString>
++#include <vector>
++#include <memory>
++#include <mutex>
++#include <cstdint>
++#include <functional>
++#include <atomic>
++
++namespace Ort {
++class Env;
++class Session;
++class MemoryInfo;
++} // namespace Ort
++
++namespace mixxx {
++
++class HTDemucsEngine {
++  public:
++    static HTDemucsEngine& instance();
++
++    // Constant parameters matching HTDemucs v4
++    static constexpr int kSampleRate = 44100;
++    static constexpr int kSegmentSamples = 343980; // 7.8 seconds
++    static constexpr int kOverlapSamples = kSegmentSamples / 4; // ~1.95s overlap
++    static constexpr int kStrideSamples = kSegmentSamples - kOverlapSamples; // ~5.85s stride
++
++    // Check if ONNX Runtime and HTDemucs model are available on the system
++    bool isAvailable();
++
++    // Initialize the ONNX session with the HTDemucs v4 model
++    bool initialize(const QString& customModelPath = QString());
++
++    // Check if initialized
++    bool isInitialized() const;
++
++    // Separate a single 7.8-second segment (343,980 samples)
++    bool separateSegment(
++            const float* in_l, const float* in_r,
++            float* drums_l, float* drums_r,
++            float* bass_l, float* bass_r,
++            float* other_l, float* other_r,
++            float* vocals_l, float* vocals_r);
++
++    // Convenience 3-stem separation for a segment (Instruments = Bass + Other)
++    bool separateSegment3Stem(
++            const float* in_l, const float* in_r,
++            float* voc_l, float* voc_r,
++            float* drum_l, float* drum_r,
++            float* inst_l, float* inst_r);
++
++    // Full audio separation with overlap-add windowing
++    bool separateTrack(
++            uint32_t totalFrames,
++            const float* in_l, const float* in_r,
++            float* voc_l, float* voc_r,
++            float* drum_l, float* drum_r,
++            float* inst_l, float* inst_r,
++            std::function<void(double)> progressCallback = nullptr,
++            std::atomic<bool>* pCancelFlag = nullptr);
++
++    void finalize();
++
++  private:
++    HTDemucsEngine();
++    ~HTDemucsEngine();
++
++    bool locateModel(QString* outPath) const;
++
++    std::unique_ptr<Ort::Env> m_pEnv;
++    std::unique_ptr<Ort::Session> m_pSession;
++    std::unique_ptr<Ort::Session> m_pSessionVoc;
++    std::unique_ptr<Ort::Session> m_pSessionDrum;
++    std::unique_ptr<Ort::MemoryInfo> m_pMemoryInfo;
++
++    // Hann-like overlap window
++    std::vector<float> m_window;
++
++    bool m_bInitialized{false};
++    bool m_bFineTuned{false};
++    std::recursive_mutex m_mutex;
++};
++
++} // namespace mixxx
+diff --git a/src/engine/stems/stemtrackbuffer.cpp b/src/engine/stems/stemtrackbuffer.cpp
+new file mode 100644
+index 0000000..2e90cee
+--- /dev/null
++++ b/src/engine/stems/stemtrackbuffer.cpp
+@@ -0,0 +1,112 @@
++#include "engine/stems/stemtrackbuffer.h"
++
++#include <cstring>
++
++namespace mixxx {
++
++StemTrackBuffer::StemTrackBuffer() = default;
++
++void StemTrackBuffer::allocate(uint32_t totalFrames) {
++    m_framesReady.store(0, std::memory_order_release);
++    m_totalFrames = totalFrames;
++
++    m_vocL.assign(totalFrames, 0.0f);
++    m_vocR.assign(totalFrames, 0.0f);
++    m_drumL.assign(totalFrames, 0.0f);
++    m_drumR.assign(totalFrames, 0.0f);
++    m_instL.assign(totalFrames, 0.0f);
++    m_instR.assign(totalFrames, 0.0f);
++}
++
++void StemTrackBuffer::clear() {
++    m_framesReady.store(0, std::memory_order_release);
++    m_totalFrames = 0;
++    m_vocL.clear();
++    m_vocR.clear();
++    m_drumL.clear();
++    m_drumR.clear();
++    m_instL.clear();
++    m_instR.clear();
++}
++
++bool StemTrackBuffer::isFrameReady(uint32_t frame) const {
++    return frame < m_framesReady.load(std::memory_order_acquire);
++}
++
++bool StemTrackBuffer::isRangeReady(uint32_t startFrame, uint32_t numFrames) const {
++    const uint32_t ready = m_framesReady.load(std::memory_order_acquire);
++    return (startFrame + numFrames) <= ready;
++}
++
++void StemTrackBuffer::writeChunk(
++        uint32_t startFrame,
++        uint32_t numFrames,
++        const float* voc_l, const float* voc_r,
++        const float* drum_l, const float* drum_r,
++        const float* inst_l, const float* inst_r) {
++    if (startFrame >= m_totalFrames || numFrames == 0) {
++        return;
++    }
++
++    const uint32_t count = std::min(numFrames, m_totalFrames - startFrame);
++
++    if (voc_l) std::memcpy(&m_vocL[startFrame], voc_l, count * sizeof(float));
++    if (voc_r) std::memcpy(&m_vocR[startFrame], voc_r, count * sizeof(float));
++    if (drum_l) std::memcpy(&m_drumL[startFrame], drum_l, count * sizeof(float));
++    if (drum_r) std::memcpy(&m_drumR[startFrame], drum_r, count * sizeof(float));
++    if (inst_l) std::memcpy(&m_instL[startFrame], inst_l, count * sizeof(float));
++    if (inst_r) std::memcpy(&m_instR[startFrame], inst_r, count * sizeof(float));
++
++    const uint32_t endFrame = startFrame + count;
++    uint32_t currentReady = m_framesReady.load(std::memory_order_relaxed);
++    while (endFrame > currentReady) {
++        if (m_framesReady.compare_exchange_weak(
++                    currentReady, endFrame,
++                    std::memory_order_release,
++                    std::memory_order_relaxed)) {
++            break;
++        }
++    }
++}
++
++void StemTrackBuffer::readFrames(
++        uint32_t startFrame,
++        uint32_t numFrames,
++        float* voc_l, float* voc_r,
++        float* drum_l, float* drum_r,
++        float* inst_l, float* inst_r) const {
++    if (numFrames == 0) {
++        return;
++    }
++
++    if (startFrame >= m_totalFrames) {
++        if (voc_l) std::memset(voc_l, 0, numFrames * sizeof(float));
++        if (voc_r) std::memset(voc_r, 0, numFrames * sizeof(float));
++        if (drum_l) std::memset(drum_l, 0, numFrames * sizeof(float));
++        if (drum_r) std::memset(drum_r, 0, numFrames * sizeof(float));
++        if (inst_l) std::memset(inst_l, 0, numFrames * sizeof(float));
++        if (inst_r) std::memset(inst_r, 0, numFrames * sizeof(float));
++        return;
++    }
++
++    const uint32_t count = std::min(numFrames, m_totalFrames - startFrame);
++
++    if (voc_l) std::memcpy(voc_l, &m_vocL[startFrame], count * sizeof(float));
++    if (voc_r) std::memcpy(voc_r, &m_vocR[startFrame], count * sizeof(float));
++    if (drum_l) std::memcpy(drum_l, &m_drumL[startFrame], count * sizeof(float));
++    if (drum_r) std::memcpy(drum_r, &m_drumR[startFrame], count * sizeof(float));
++    if (inst_l) std::memcpy(inst_l, &m_instL[startFrame], count * sizeof(float));
++    if (inst_r) std::memcpy(inst_r, &m_instR[startFrame], count * sizeof(float));
++
++    if (count < numFrames) {
++        const uint32_t rem = numFrames - count;
++        if (voc_l) std::memset(voc_l + count, 0, rem * sizeof(float));
++        if (voc_r) std::memset(voc_r + count, 0, rem * sizeof(float));
++        if (drum_l) std::memset(drum_l + count, 0, rem * sizeof(float));
++        if (drum_r) std::memset(drum_r + count, 0, rem * sizeof(float));
++        if (inst_l) std::memset(inst_l + count, 0, rem * sizeof(float));
++        if (inst_r) std::memset(inst_r + count, 0, rem * sizeof(float));
++    }
++}
++
++} // namespace mixxx
+diff --git a/src/engine/stems/stemtrackbuffer.h b/src/engine/stems/stemtrackbuffer.h
+new file mode 100644
+index 0000000..c64a145
+--- /dev/null
++++ b/src/engine/stems/stemtrackbuffer.h
+@@ -0,0 +1,61 @@
++#pragma once
++
++#include <vector>
++#include <atomic>
++#include <cstdint>
++#include <algorithm>
++
++namespace mixxx {
++
++class StemTrackBuffer {
++  public:
++    StemTrackBuffer();
++    ~StemTrackBuffer() = default;
++
++    // Allocate storage for totalFrames
++    void allocate(uint32_t totalFrames);
++
++    // Clear buffer and reset frame count
++    void clear();
++
++    // Check if the given frame range has been separated and is ready
++    bool isFrameReady(uint32_t frame) const;
++    bool isRangeReady(uint32_t startFrame, uint32_t numFrames) const;
++
++    uint32_t framesReady() const {
++        return m_framesReady.load(std::memory_order_acquire);
++    }
++
++    uint32_t totalFrames() const {
++        return m_totalFrames;
++    }
++
++    // Write a separated chunk into the buffer
++    void writeChunk(
++            uint32_t startFrame,
++            uint32_t numFrames,
++            const float* voc_l, const float* voc_r,
++            const float* drum_l, const float* drum_r,
++            const float* inst_l, const float* inst_r);
++
++    // Read separated stem samples for a range of frames
++    void readFrames(
++            uint32_t startFrame,
++            uint32_t numFrames,
++            float* voc_l, float* voc_r,
++            float* drum_l, float* drum_r,
++            float* inst_l, float* inst_r) const;
++
++  private:
++    uint32_t m_totalFrames{0};
++    std::atomic<uint32_t> m_framesReady{0};
++
++    std::vector<float> m_vocL;
++    std::vector<float> m_vocR;
++    std::vector<float> m_drumL;
++    std::vector<float> m_drumR;
++    std::vector<float> m_instL;
++    std::vector<float> m_instR;
++};
++
++} // namespace mixxx
+diff --git a/src/engine/stems/stemworkerthread.cpp b/src/engine/stems/stemworkerthread.cpp
+new file mode 100644
+index 0000000..1b7d79a
+--- /dev/null
++++ b/src/engine/stems/stemworkerthread.cpp
+@@ -0,0 +1,252 @@
++#include "engine/stems/stemworkerthread.h"
++#include "engine/stems/stemseparator.h"
++#include "engine/stems/stemcache.h"
++#include "sources/soundsourceproxy.h"
++#include "sources/audiosource.h"
++#include "util/indexrange.h"
++#include "util/samplebuffer.h"
++
++#include <QDebug>
++#include <QProcess>
++#include <QFile>
++#include <QDateTime>
++#include <vector>
++#include <algorithm>
++
++namespace mixxx {
++
++StemWorkerThread::StemWorkerThread(
++        std::shared_ptr<StemTrackBuffer> pBuffer,
++        ControlObject* pProgressControl,
++        ControlObject* pStatusControl)
++        : m_pBuffer(std::move(pBuffer)),
++          m_pProgressControl(pProgressControl),
++          m_pStatusControl(pStatusControl) {
++}
++
++StemWorkerThread::~StemWorkerThread() {
++    stop();
++    wait();
++}
++
++void StemWorkerThread::loadTrack(TrackPointer pTrack) {
++    QMutexLocker locker(&m_mutex);
++    m_pNextTrack = std::move(pTrack);
++    m_abortCurrentTrack.storeRelaxed(1);
++    m_hasWork.storeRelaxed(1);
++    m_condition.wakeOne();
++
++    if (!isRunning()) {
++        m_stopRequested.storeRelaxed(0);
++        start(QThread::LowPriority);
++    }
++}
++
++void StemWorkerThread::stop() {
++    m_stopRequested.storeRelaxed(1);
++    m_abortCurrentTrack.storeRelaxed(1);
++    m_hasWork.storeRelaxed(0);
++    QMutexLocker locker(&m_mutex);
++    m_pNextTrack.reset();
++    m_condition.wakeOne();
++}
++
++void StemWorkerThread::run() {
++    while (!m_stopRequested.loadAcquire()) {
++        TrackPointer pTrack;
++        {
++            QMutexLocker locker(&m_mutex);
++            while (!m_pNextTrack && !m_stopRequested.loadAcquire()) {
++                m_condition.wait(&m_mutex);
++            }
++            if (m_stopRequested.loadAcquire()) {
++                break;
++            }
++            pTrack = m_pNextTrack;
++            m_pNextTrack.reset();
++            m_abortCurrentTrack.storeRelaxed(0);
++        }
++
++        if (!pTrack) {
++            continue;
++        }
++
++        m_pCurrentTrack = pTrack;
++
++        // 1. Check if stems are already cached on disk (VirtualDJ-style instant load)
++        if (StemCache::hasCachedStems(pTrack)) {
++            if (StemCache::loadFromCache(pTrack, m_pBuffer.get())) {
++                qDebug() << "StemWorkerThread: Stems instantly loaded from cache for"
++                         << pTrack->getTitle();
++                if (m_pProgressControl) {
++                    m_pProgressControl->set(1.0);
++                }
++                if (m_pStatusControl) {
++                    m_pStatusControl->set(2.0); // 2 = AI Stems Ready!
++                }
++                continue;
++            }
++        }
++
++        if (m_pStatusControl) {
++            m_pStatusControl->set(1.0); // 1 = Analyzing
++        }
++        if (m_pProgressControl) {
++            m_pProgressControl->set(0.0);
++        }
++
++        // Check if HTDemucs ONNX engine is available
++        if (!HTDemucsEngine::instance().isAvailable()) {
++            qDebug() << "StemWorkerThread: HTDemucs ONNX engine not available, aborting ML separation";
++            if (m_pStatusControl) {
++                m_pStatusControl->set(0.0); // 0 = Idle
++            }
++            continue;
++        }
++
++        std::vector<float> in_l;
++        std::vector<float> in_r;
++        uint32_t totalFrames = 0;
++
++        // Attempt 1: Try decoding via Mixxx SoundSourceProxy
++        mixxx::AudioSource::OpenParams config;
++        config.setChannelCount(mixxx::audio::ChannelCount::stereo());
++        auto pAudioSource = SoundSourceProxy(pTrack).openAudioSource(config);
++
++        if (pAudioSource && pAudioSource->verifyReadable() && pAudioSource->frameLength() > 0) {
++            totalFrames = static_cast<uint32_t>(pAudioSource->frameLength());
++            in_l.resize(totalFrames);
++            in_r.resize(totalFrames);
++
++            constexpr SINT kBlockSize = 65536;
++            mixxx::SampleBuffer sampleBuffer(kBlockSize * 2);
++            SINT framesReadTotal = 0;
++            while (framesReadTotal < static_cast<SINT>(totalFrames)) {
++                if (m_stopRequested.loadAcquire() || m_abortCurrentTrack.loadAcquire()) {
++                    break;
++                }
++                const SINT framesToRead = std::min(kBlockSize, static_cast<SINT>(totalFrames) - framesReadTotal);
++                const auto chunkRange = mixxx::IndexRange::between(framesReadTotal, framesReadTotal + framesToRead);
++                const auto readableFrames = pAudioSource->readSampleFrames(
++                        mixxx::WritableSampleFrames(chunkRange, mixxx::SampleBuffer::WritableSlice(sampleBuffer)));
++                const SINT count = readableFrames.frameLength();
++                if (count <= 0) {
++                    break;
++                }
++                for (SINT i = 0; i < count; ++i) {
++                    in_l[framesReadTotal + i] = static_cast<float>(sampleBuffer[2 * i]);
++                    in_r[framesReadTotal + i] = static_cast<float>(sampleBuffer[2 * i + 1]);
++                }
++                framesReadTotal += count;
++            }
++        }
++
++        // Attempt 2: Fallback to native platform audio converter (afconvert on macOS)
++        if (in_l.empty() || totalFrames == 0) {
++#ifdef __APPLE__
++            const QString inputPath = pTrack->getLocation();
++            const QString tempWavPath = QString("/tmp/mixxx_stem_decode_%1.wav")
++                    .arg(QDateTime::currentMSecsSinceEpoch());
++
++            QStringList args;
++            args << "-f" << "WAVE" << "-d" << "LEF32@44100" << "-c" << "2" << inputPath << tempWavPath;
++            int ret = QProcess::execute("afconvert", args);
++            if (ret == 0) {
++                QFile wavFile(tempWavPath);
++                if (wavFile.open(QIODevice::ReadOnly)) {
++                    QByteArray header = wavFile.read(8192);
++                    int dataPos = header.indexOf("data");
++                    if (dataPos >= 0) {
++                        wavFile.seek(dataPos + 4);
++                        uint32_t dataBytes = 0;
++                        wavFile.read(reinterpret_cast<char*>(&dataBytes), sizeof(uint32_t));
++                        totalFrames = dataBytes / (2 * sizeof(float));
++
++                        wavFile.seek(dataPos + 8);
++                        std::vector<float> interleaved(totalFrames * 2);
++                        qint64 readBytes = wavFile.read(reinterpret_cast<char*>(interleaved.data()), dataBytes);
++                        uint32_t actualFrames = static_cast<uint32_t>(readBytes / (2 * sizeof(float)));
++                        totalFrames = actualFrames;
++
++                        in_l.resize(totalFrames);
++                        in_r.resize(totalFrames);
++                        for (uint32_t i = 0; i < totalFrames; ++i) {
++                            in_l[i] = interleaved[2 * i];
++                            in_r[i] = interleaved[2 * i + 1];
++                        }
++                    }
++                    wavFile.close();
++                }
++                QFile::remove(tempWavPath);
++            }
++#endif
++        }
++
++        if (totalFrames == 0 || in_l.empty()) {
++            qDebug() << "StemWorkerThread: Failed to decode audio for" << pTrack->getLocation();
++            if (m_pStatusControl) {
++                m_pStatusControl->set(0.0);
++            }
++            continue;
++        }
++
++        m_pBuffer->allocate(totalFrames);
++
++        qDebug() << "StemWorkerThread: Starting HTDemucs v4 25% overlap-add separation of"
++                 << pTrack->getTitle() << "(" << totalFrames << "frames)";
++
++        std::vector<float> voc_l(totalFrames);
++        std::vector<float> voc_r(totalFrames);
++        std::vector<float> drum_l(totalFrames);
++        std::vector<float> drum_r(totalFrames);
++        std::vector<float> inst_l(totalFrames);
++        std::vector<float> inst_r(totalFrames);
++
++        std::atomic<bool> cancelFlag{false};
++
++        bool ok = HTDemucsEngine::instance().separateTrack(
++                totalFrames,
++                in_l.data(), in_r.data(),
++                voc_l.data(), voc_r.data(),
++                drum_l.data(), drum_r.data(),
++                inst_l.data(), inst_r.data(),
++                [&](double progress) {
++                    if (m_pProgressControl) {
++                        m_pProgressControl->set(progress);
++                    }
++                    if (m_stopRequested.loadAcquire() || m_abortCurrentTrack.loadAcquire()) {
++                        cancelFlag.store(true);
++                    }
++                },
++                &cancelFlag);
++
++        if (ok && !cancelFlag.load()) {
++            m_pBuffer->writeChunk(
++                    0, totalFrames,
++                    voc_l.data(), voc_r.data(),
++                    drum_l.data(), drum_r.data(),
++                    inst_l.data(), inst_r.data());
++
++            StemCache::saveToCache(pTrack, m_pBuffer.get());
++            qDebug() << "StemWorkerThread: Successfully separated stems and saved cache for"
++                     << pTrack->getTitle();
++
++            if (m_pProgressControl) {
++                m_pProgressControl->set(1.0);
++            }
++            if (m_pStatusControl) {
++                m_pStatusControl->set(2.0); // 2 = AI Stems Ready!
++            }
++        } else {
++            qDebug() << "StemWorkerThread: HTDemucs separation aborted or failed for"
++                     << pTrack->getTitle();
++            if (m_pStatusControl) {
++                m_pStatusControl->set(0.0);
++            }
++        }
++    }
++}
++
++} // namespace mixxx
++
++#include "moc_stemworkerthread.cpp"
+diff --git a/src/engine/stems/stemworkerthread.h b/src/engine/stems/stemworkerthread.h
+new file mode 100644
+index 0000000..3b75994
+--- /dev/null
++++ b/src/engine/stems/stemworkerthread.h
+@@ -0,0 +1,47 @@
++#pragma once
++
++#include <QThread>
++#include <QAtomicInt>
++#include <QMutex>
++#include <QWaitCondition>
++#include <memory>
++
++#include "track/track.h"
++#include "control/controlobject.h"
++#include "engine/stems/stemtrackbuffer.h"
++
++namespace mixxx {
++
++class StemWorkerThread : public QThread {
++    Q_OBJECT
++  public:
++    StemWorkerThread(
++            std::shared_ptr<StemTrackBuffer> pBuffer,
++            ControlObject* pProgressControl,
++            ControlObject* pStatusControl);
++    ~StemWorkerThread() override;
++
++    // Request analyzing a track in the background
++    void loadTrack(TrackPointer pTrack);
++
++    // Stop current analysis
++    void stop();
++
++  protected:
++    void run() override;
++
++  private:
++    std::shared_ptr<StemTrackBuffer> m_pBuffer;
++    ControlObject* m_pProgressControl;
++    ControlObject* m_pStatusControl;
++
++    QMutex m_mutex;
++    QWaitCondition m_condition;
++    TrackPointer m_pNextTrack;
++    TrackPointer m_pCurrentTrack;
++    QAtomicInt m_stopRequested{0};
++    QAtomicInt m_abortCurrentTrack{0};
++    QAtomicInt m_hasWork{0};
++};
++
++} // namespace mixxx
+diff --git a/src/test/stemstest.cpp b/src/test/stemstest.cpp
+new file mode 100644
+index 0000000..d2b7265
+--- /dev/null
++++ b/src/test/stemstest.cpp
+@@ -0,0 +1,409 @@
++#include <gtest/gtest.h>
++#include <cmath>
++#include <vector>
++#include <onnxruntime_cxx_api.h>
++
++#include "engine/stems/stemdspisolator.h"
++#include "engine/stems/stemtrackbuffer.h"
++#include "engine/stems/stemseparator.h"
++#include "engine/stems/stemcache.h"
++#include "engine/stems/stemworkerthread.h"
++#include "track/track.h"
++#include "test/mixxxtest.h"
++
++namespace {
++
++class StemsTest : public MixxxTest {
++  protected:
++    void SetUp() override {
++    }
++};
++
++TEST_F(StemsTest, DspIsolatorUnityTransparency) {
++    mixxx::StemDspIsolator isolator;
++    isolator.init(44100.0);
++
++    constexpr int kFrames = 512;
++    std::vector<CSAMPLE> buffer(kFrames * 2);
++    for (int i = 0; i < kFrames; ++i) {
++        buffer[2 * i] = static_cast<CSAMPLE>(std::sin(2.0 * M_PI * 440.0 * i / 44100.0));
++        buffer[2 * i + 1] = static_cast<CSAMPLE>(std::cos(2.0 * M_PI * 880.0 * i / 44100.0));
++    }
++    const std::vector<CSAMPLE> original = buffer;
++
++    // Process with unity gains (1.0, 1.0, 1.0)
++    isolator.process(buffer.data(), kFrames, 1.0, 1.0, 1.0);
++
++    // Should be bit-for-bit identical due to transparent bypass
++    for (size_t i = 0; i < buffer.size(); ++i) {
++        EXPECT_FLOAT_EQ(original[i], buffer[i]);
++    }
++}
++
++TEST_F(StemsTest, DspIsolatorMuteVocals) {
++    mixxx::StemDspIsolator isolator;
++    isolator.init(44100.0);
++
++    constexpr int kFrames = 1024;
++    std::vector<CSAMPLE> buffer(kFrames * 2);
++    // Center-panned sine wave at 1 kHz (pure vocal candidate)
++    for (int i = 0; i < kFrames; ++i) {
++        CSAMPLE s = static_cast<CSAMPLE>(0.5 * std::sin(2.0 * M_PI * 1000.0 * i / 44100.0));
++        buffer[2 * i] = s;
++        buffer[2 * i + 1] = s;
++    }
++
++    // Mute vocals: gain = 0.0, drums = 1.0, inst = 1.0
++    isolator.process(buffer.data(), kFrames, 0.0, 1.0, 1.0);
++
++    // Energy should be significantly reduced compared to 0.5
++    double energy = 0.0;
++    for (int i = 256; i < kFrames; ++i) { // Skip filter settling transient
++        energy += buffer[2 * i] * buffer[2 * i];
++    }
++    energy /= (kFrames - 256);
++    EXPECT_LT(energy, 0.05); // Heavy attenuation of center vocal
++}
++
++TEST_F(StemsTest, StemTrackBufferReadWrite) {
++    mixxx::StemTrackBuffer buffer;
++    buffer.allocate(1000);
++
++    EXPECT_EQ(1000u, buffer.totalFrames());
++    EXPECT_EQ(0u, buffer.framesReady());
++    EXPECT_FALSE(buffer.isFrameReady(0));
++
++    std::vector<float> vocL(500, 0.42f);
++    std::vector<float> vocR(500, 0.42f);
++    std::vector<float> drumL(500, 0.84f);
++    std::vector<float> drumR(500, 0.84f);
++    std::vector<float> instL(500, 0.12f);
++    std::vector<float> instR(500, 0.12f);
++
++    buffer.writeChunk(0, 500, vocL.data(), vocR.data(), drumL.data(), drumR.data(), instL.data(), instR.data());
++
++    EXPECT_EQ(500u, buffer.framesReady());
++    EXPECT_TRUE(buffer.isFrameReady(100));
++    EXPECT_TRUE(buffer.isFrameReady(499));
++    EXPECT_FALSE(buffer.isFrameReady(500));
++
++    std::vector<float> outVocL(100, 0.0f);
++    std::vector<float> outVocR(100, 0.0f);
++    buffer.readFrames(50, 100, outVocL.data(), outVocR.data(), nullptr, nullptr, nullptr, nullptr);
++
++    for (int i = 0; i < 100; ++i) {
++        EXPECT_FLOAT_EQ(0.42f, outVocL[i]);
++        EXPECT_FLOAT_EQ(0.42f, outVocR[i]);
++    }
++}
++
++TEST_F(StemsTest, HTDemucsEngineAvailable) {
++    auto& engine = mixxx::HTDemucsEngine::instance();
++    EXPECT_TRUE(engine.isAvailable());
++    EXPECT_TRUE(engine.initialize());
++    EXPECT_TRUE(engine.isInitialized());
++
++    // Test audio separation on a 7.8s segment
++    const int N = mixxx::HTDemucsEngine::kSegmentSamples;
++    std::vector<float> in_l(N, 0.0f), in_r(N, 0.0f);
++    std::vector<float> voc_l(N, 0.0f), voc_r(N, 0.0f);
++    std::vector<float> drum_l(N, 0.0f), drum_r(N, 0.0f);
++    std::vector<float> inst_l(N, 0.0f), inst_r(N, 0.0f);
++
++    for (int i = 0; i < N; ++i) {
++        in_l[i] = std::sin(2.0f * M_PI * 440.0f * i / 44100.0f);
++        in_r[i] = in_l[i];
++    }
++
++    bool res = engine.separateSegment3Stem(
++            in_l.data(), in_r.data(),
++            voc_l.data(), voc_r.data(),
++            drum_l.data(), drum_r.data(),
++            inst_l.data(), inst_r.data());
++    EXPECT_TRUE(res);
++
++    // Verify output energy
++    float maxInst = 0.0f;
++    for (int i = 0; i < N; ++i) {
++        maxInst = std::max(maxInst, std::abs(inst_l[i]));
++    }
++    EXPECT_GT(maxInst, 0.5f); // 440Hz sine wave should be primarily in Instruments ("Other")
++}
++
++TEST_F(StemsTest, StemCacheSaveAndLoad) {
++    TrackPointer pTrack = Track::newTemporary("/tmp/test_stem_track.mp3");
++    ASSERT_TRUE(pTrack != nullptr);
++
++    constexpr uint32_t kFrames = 1000;
++    mixxx::StemTrackBuffer buffer;
++    buffer.allocate(kFrames);
++
++    std::vector<float> vocL(kFrames, 0.35f);
++    std::vector<float> vocR(kFrames, 0.35f);
++    std::vector<float> drumL(kFrames, 0.70f);
++    std::vector<float> drumR(kFrames, 0.70f);
++    std::vector<float> instL(kFrames, 0.15f);
++    std::vector<float> instR(kFrames, 0.15f);
++
++    buffer.writeChunk(0, kFrames,
++                      vocL.data(), vocR.data(),
++                      drumL.data(), drumR.data(),
++                      instL.data(), instR.data());
++
++    EXPECT_TRUE(mixxx::StemCache::saveToCache(pTrack, &buffer));
++    EXPECT_TRUE(mixxx::StemCache::hasCachedStems(pTrack));
++
++    mixxx::StemTrackBuffer loadedBuffer;
++    EXPECT_TRUE(mixxx::StemCache::loadFromCache(pTrack, &loadedBuffer));
++    EXPECT_EQ(loadedBuffer.totalFrames(), kFrames);
++    EXPECT_EQ(loadedBuffer.framesReady(), kFrames);
++
++    std::vector<float> outVocL(kFrames, 0.0f);
++    std::vector<float> outVocR(kFrames, 0.0f);
++    std::vector<float> outDrumL(kFrames, 0.0f);
++    std::vector<float> outDrumR(kFrames, 0.0f);
++    std::vector<float> outInstL(kFrames, 0.0f);
++    std::vector<float> outInstR(kFrames, 0.0f);
++
++    loadedBuffer.readFrames(0, kFrames,
++                           outVocL.data(), outVocR.data(),
++                           outDrumL.data(), outDrumR.data(),
++                           outInstL.data(), outInstR.data());
++
++    for (uint32_t i = 0; i < kFrames; ++i) {
++        EXPECT_FLOAT_EQ(0.35f, outVocL[i]);
++        EXPECT_FLOAT_EQ(0.35f, outVocR[i]);
++        EXPECT_FLOAT_EQ(0.70f, outDrumL[i]);
++        EXPECT_FLOAT_EQ(0.70f, outDrumR[i]);
++        EXPECT_FLOAT_EQ(0.15f, outInstL[i]);
++        EXPECT_FLOAT_EQ(0.15f, outInstR[i]);
++    }
++
++    // Cleanup
++    QFile::remove(mixxx::StemCache::getCachePath(pTrack));
++    EXPECT_FALSE(mixxx::StemCache::hasCachedStems(pTrack));
++}
++
++namespace {
++void writePcm16Wav(const QString& path, const float* l, const float* r, uint32_t numFrames) {
++    QFile file(path);
++    if (!file.open(QIODevice::WriteOnly)) {
++        return;
++    }
++    const uint32_t subchunk2Size = numFrames * 2 * sizeof(int16_t);
++    const uint32_t chunkSize = 36 + subchunk2Size;
++    file.write("RIFF", 4);
++    file.write(reinterpret_cast<const char*>(&chunkSize), 4);
++    file.write("WAVEfmt ", 8);
++    const uint32_t subchunk1Size = 16;
++    const uint16_t audioFormat = 1; // PCM
++    const uint16_t numChannels = 2;
++    const uint32_t sampleRate = 44100;
++    const uint32_t byteRate = sampleRate * numChannels * sizeof(int16_t);
++    const uint16_t blockAlign = numChannels * sizeof(int16_t);
++    const uint16_t bitsPerSample = 16;
++    file.write(reinterpret_cast<const char*>(&subchunk1Size), 4);
++    file.write(reinterpret_cast<const char*>(&audioFormat), 2);
++    file.write(reinterpret_cast<const char*>(&numChannels), 2);
++    file.write(reinterpret_cast<const char*>(&sampleRate), 4);
++    file.write(reinterpret_cast<const char*>(&byteRate), 4);
++    file.write(reinterpret_cast<const char*>(&blockAlign), 2);
++    file.write(reinterpret_cast<const char*>(&bitsPerSample), 2);
++    file.write("data", 4);
++    file.write(reinterpret_cast<const char*>(&subchunk2Size), 4);
++    std::vector<int16_t> pcm(numFrames * 2);
++    for (uint32_t i = 0; i < numFrames; ++i) {
++        float sl = std::clamp(l[i], -1.0f, 1.0f);
++        float sr = std::clamp(r[i], -1.0f, 1.0f);
++        pcm[2 * i] = static_cast<int16_t>(sl * 32767.0f);
++        pcm[2 * i + 1] = static_cast<int16_t>(sr * 32767.0f);
++    }
++    file.write(reinterpret_cast<const char*>(pcm.data()), subchunk2Size);
++}
++} // namespace
++
++TEST_F(StemsTest, SeparateDemoTrack2RealAI) {
++    QFile wavFile("/tmp/demo2_decoded.wav");
++    if (!wavFile.exists() || !wavFile.open(QIODevice::ReadOnly)) {
++        GTEST_SKIP() << "Test audio /tmp/demo2_decoded.wav not found, skipping real track separation test";
++    }
++
++    // Seek past 4096-byte header to raw audio data
++    ASSERT_TRUE(wavFile.seek(4096));
++
++    // Process 600,000 frames (~13.6 seconds, 2 overlapping chunks)
++    const uint32_t kFrames = 600000;
++    std::vector<float> inInterleaved(kFrames * 2);
++    qint64 bytesRead = wavFile.read(reinterpret_cast<char*>(inInterleaved.data()), kFrames * 2 * sizeof(float));
++    ASSERT_EQ(bytesRead, static_cast<qint64>(kFrames * 2 * sizeof(float)));
++
++    std::vector<float> in_l(kFrames);
++    std::vector<float> in_r(kFrames);
++    for (uint32_t i = 0; i < kFrames; ++i) {
++        in_l[i] = inInterleaved[2 * i];
++        in_r[i] = inInterleaved[2 * i + 1];
++    }
++
++    std::vector<float> voc_l(kFrames), voc_r(kFrames);
++    std::vector<float> drum_l(kFrames), drum_r(kFrames);
++    std::vector<float> inst_l(kFrames), inst_r(kFrames);
++
++    std::cout << "Starting HTDemucs v4 real separation with overlap-add..." << std::endl;
++    bool ok = mixxx::HTDemucsEngine::instance().separateTrack(
++            kFrames,
++            in_l.data(), in_r.data(),
++            voc_l.data(), voc_r.data(),
++            drum_l.data(), drum_r.data(),
++            inst_l.data(), inst_r.data(),
++            [](double p) {
++                std::cout << "  Separation progress: " << static_cast<int>(p * 100) << "%" << std::endl;
++            });
++    if (!ok) {
++        GTEST_SKIP() << "HTDemucs models not present in system, skipping";
++    }
++
++    // Write isolated stem WAV files to /tmp so we can inspect and verify them
++    writePcm16Wav("/tmp/demo2_vocals.wav", voc_l.data(), voc_r.data(), kFrames);
++    writePcm16Wav("/tmp/demo2_drums.wav", drum_l.data(), drum_r.data(), kFrames);
++    writePcm16Wav("/tmp/demo2_inst.wav", inst_l.data(), inst_r.data(), kFrames);
++    std::cout << "Wrote separated stems to /tmp/demo2_vocals.wav, /tmp/demo2_drums.wav, /tmp/demo2_inst.wav" << std::endl;
++
++    // Cache stems for the track in Mixxx
++    TrackPointer pTrack = Track::newTemporary("/tmp/demo_test_track.mp3");
++    ASSERT_TRUE(pTrack != nullptr);
++
++    mixxx::StemTrackBuffer buffer;
++    buffer.allocate(kFrames);
++    buffer.writeChunk(0, kFrames,
++                      voc_l.data(), voc_r.data(),
++                      drum_l.data(), drum_r.data(),
++                      inst_l.data(), inst_r.data());
++
++    EXPECT_TRUE(mixxx::StemCache::saveToCache(pTrack, &buffer));
++    EXPECT_TRUE(mixxx::StemCache::hasCachedStems(pTrack));
++    std::cout << "Cached real AI stems in " << mixxx::StemCache::getCachePath(pTrack).toStdString() << std::endl;
++}
++
++TEST_F(StemsTest, InspectAdvancedModels) {
++    Ort::Env env(ORT_LOGGING_LEVEL_WARNING, "InspectTest");
++    Ort::SessionOptions sessionOptions;
++    sessionOptions.SetIntraOpNumThreads(4);
++
++    const std::vector<std::string> modelPaths = {
++        "models/bs_roformer_ep317_quantized.onnx",
++        "models/scnet-large.int8.onnx"
++    };
++
++    for (const auto& path : modelPaths) {
++        if (!QFileInfo::exists(QString::fromStdString(path))) {
++            continue;
++        }
++        std::cout << "\n=== Inspecting model: " << path << " ===" << std::endl;
++        try {
++            Ort::Session session(env, path.c_str(), sessionOptions);
++            Ort::AllocatorWithDefaultOptions allocator;
++
++            size_t numInputs = session.GetInputCount();
++            std::cout << "Number of inputs: " << numInputs << std::endl;
++            for (size_t i = 0; i < numInputs; ++i) {
++                auto name = session.GetInputNameAllocated(i, allocator);
++                auto typeInfo = session.GetInputTypeInfo(i);
++                auto tensorInfo = typeInfo.GetTensorTypeAndShapeInfo();
++                auto shape = tensorInfo.GetShape();
++                std::cout << "  Input " << i << ": name=" << name.get() << " shape=[";
++                for (size_t s = 0; s < shape.size(); ++s) {
++                    std::cout << shape[s] << (s + 1 < shape.size() ? ", " : "");
++                }
++                std::cout << "]" << std::endl;
++            }
++
++            size_t numOutputs = session.GetOutputCount();
++            std::cout << "Number of outputs: " << numOutputs << std::endl;
++            for (size_t i = 0; i < numOutputs; ++i) {
++                auto name = session.GetOutputNameAllocated(i, allocator);
++                auto typeInfo = session.GetOutputTypeInfo(i);
++                auto tensorInfo = typeInfo.GetTensorTypeAndShapeInfo();
++                auto shape = tensorInfo.GetShape();
++                std::cout << "  Output " << i << ": name=" << name.get() << " shape=[";
++                for (size_t s = 0; s < shape.size(); ++s) {
++                    std::cout << shape[s] << (s + 1 < shape.size() ? ", " : "");
++                }
++                std::cout << "]" << std::endl;
++            }
++        } catch (const Ort::Exception& e) {
++            std::cout << "Failed to inspect model: " << e.what() << std::endl;
++        }
++    }
++}
++
++TEST_F(StemsTest, SeparateWithHTDemucsFT) {
++    const QString vocalsModelPath = "models/htdemucs_ft_vocals.onnx";
++    const QString drumsModelPath = "models/htdemucs_ft_drums.onnx";
++    QFile wavFile("/tmp/demo2_decoded.wav");
++
++    if (!QFileInfo::exists(vocalsModelPath) || !QFileInfo::exists(drumsModelPath) || !wavFile.exists()) {
++        GTEST_SKIP() << "Fine-tuned models or /tmp/demo2_decoded.wav not found, skipping";
++    }
++    ASSERT_TRUE(wavFile.open(QIODevice::ReadOnly));
++    ASSERT_TRUE(wavFile.seek(4096));
++
++    const int64_t N = 343980; // 7.8 seconds
++    std::vector<float> inInterleaved(N * 2);
++    qint64 bytesRead = wavFile.read(reinterpret_cast<char*>(inInterleaved.data()), N * 2 * sizeof(float));
++    ASSERT_EQ(bytesRead, static_cast<qint64>(N * 2 * sizeof(float)));
++
++    std::vector<float> inputData(2 * N);
++    for (int64_t i = 0; i < N; ++i) {
++        inputData[i] = inInterleaved[2 * i];
++        inputData[N + i] = inInterleaved[2 * i + 1];
++    }
++
++    const std::vector<int64_t> inputShape = {1, 2, N};
++    const char* const inputNames[] = {"mix"};
++    const char* const outputNames[] = {"stems"};
++
++    Ort::Value inTensorVoc = Ort::Value::CreateTensor<float>(
++            memoryInfo, inputData.data(), inputData.size(), inputShape.data(), inputShape.size());
++
++    auto outTensorsVoc = vocSession.Run(
++            Ort::RunOptions{nullptr}, inputNames, &inTensorVoc, 1, outputNames, 1);
++    ASSERT_FALSE(outTensorsVoc.empty());
++
++    const float* outVocData = outTensorsVoc[0].GetTensorData<float>();
++    // In htdemucs_ft_vocals, stem 3 is the fine-tuned vocals
++    std::vector<float> vocL(N), vocR(N);
++    std::memcpy(vocL.data(), outVocData + 3 * (2 * N), N * sizeof(float));
++    std::memcpy(vocR.data(), outVocData + 3 * (2 * N) + N, N * sizeof(float));
++
++    Ort::Value inTensorDrum = Ort::Value::CreateTensor<float>(
++            memoryInfo, inputData.data(), inputData.size(), inputShape.data(), inputShape.size());
++
++    auto outTensorsDrum = drumSession.Run(
++            Ort::RunOptions{nullptr}, inputNames, &inTensorDrum, 1, outputNames, 1);
++    ASSERT_FALSE(outTensorsDrum.empty());
++
++    const float* outDrumData = outTensorsDrum[0].GetTensorData<float>();
++    // In htdemucs_ft_drums, stem 0 is the fine-tuned drums
++    std::vector<float> drumL(N), drumR(N);
++    std::memcpy(drumL.data(), outDrumData + 0 * (2 * N), N * sizeof(float));
++    std::memcpy(drumR.data(), outDrumData + 0 * (2 * N) + N, N * sizeof(float));
++
++    // Pure residual instruments: Inst = Mix - (Voc + Drum)
++    std::vector<float> instL(N), instR(N);
++    for (int64_t i = 0; i < N; ++i) {
++        instL[i] = inputData[i] - vocL[i] - drumL[i];
++        instR[i] = inputData[N + i] - vocR[i] - drumR[i];
++    }
++
++    // Write fine-tuned isolated WAVs
++    writePcm16Wav("/tmp/demo2_vocals_finetuned.wav", vocL.data(), vocR.data(), static_cast<uint32_t>(N));
++    writePcm16Wav("/tmp/demo2_drums_finetuned.wav", drumL.data(), drumR.data(), static_cast<uint32_t>(N));
++    writePcm16Wav("/tmp/demo2_inst_finetuned.wav", instL.data(), instR.data(), static_cast<uint32_t>(N));
++
++    std::cout << "\n>>> Generated Fine-Tuned Stems:" << std::endl;
++    std::cout << "  /tmp/demo2_vocals_finetuned.wav" << std::endl;
++    std::cout << "  /tmp/demo2_drums_finetuned.wav" << std::endl;
++    std::cout << "  /tmp/demo2_inst_finetuned.wav" << std::endl;
++}
++
++} // namespace
