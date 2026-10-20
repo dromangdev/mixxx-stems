@@ -1,21 +1,49 @@
 #include "engine/stems/stemseparator.h"
 
+#ifdef MIXXX_HAS_ONNXRUNTIME
 #include <onnxruntime_cxx_api.h>
 #ifdef __APPLE__
 #include <coreml_provider_factory.h>
 #endif
+#endif
 
 #include <QDir>
 #include <QFileInfo>
+#include <QCoreApplication>
+#include <QStandardPaths>
 #include <QDebug>
 #include <cmath>
 #include <cstring>
 
 namespace mixxx {
 
+#ifdef MIXXX_HAS_ONNXRUNTIME
+
 namespace {
 const char* const kInputNames[] = {"mix"};
 const char* const kOutputNames[] = {"stems"};
+
+QString findModelFile(const QString& filename) {
+    const QStringList searchDirs = {
+        QCoreApplication::applicationDirPath() + "/models",
+        QCoreApplication::applicationDirPath() + "/../Resources/models",
+        QDir::currentPath() + "/models",
+        QDir::currentPath(),
+        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/models",
+        QDir::homePath() + "/.mixxx/models",
+        QDir::homePath() + "/Library/Application Support/Mixxx/models",
+        "/usr/share/mixxx/models",
+        "/usr/local/share/mixxx/models"
+    };
+
+    for (const auto& dir : searchDirs) {
+        QString candidate = dir + "/" + filename;
+        if (QFileInfo::exists(candidate)) {
+            return candidate;
+        }
+    }
+    return QString();
+}
 } // namespace
 
 HTDemucsEngine& HTDemucsEngine::instance() {
@@ -38,20 +66,25 @@ HTDemucsEngine::~HTDemucsEngine() {
 }
 
 bool HTDemucsEngine::locateModel(QString* outPath) const {
-    const QStringList candidates = {
-        QDir::currentPath() + "/models/htdemucs.onnx",
-        QDir::homePath() + "/Library/Application Support/Mixxx/models/htdemucs.onnx",
-        "/Users/dromang/Documents/Gemini/Gemini/Skills/replica-gemini/mixxx/models/htdemucs.onnx"
-    };
-
-    for (const auto& path : candidates) {
-        if (QFileInfo::exists(path)) {
-            if (outPath) {
-                *outPath = path;
-            }
-            return true;
+    // 1. Check for Fine-Tuned dual specialist models (Vocals + Drums)
+    const QString ftVoc = findModelFile("htdemucs_ft_vocals.onnx");
+    const QString ftDrum = findModelFile("htdemucs_ft_drums.onnx");
+    if (!ftVoc.isEmpty() && !ftDrum.isEmpty()) {
+        if (outPath) {
+            *outPath = ftVoc;
         }
+        return true;
     }
+
+    // 2. Check for base 4-stem model
+    const QString base = findModelFile("htdemucs.onnx");
+    if (!base.isEmpty()) {
+        if (outPath) {
+            *outPath = base;
+        }
+        return true;
+    }
+
     return false;
 }
 
@@ -71,10 +104,10 @@ bool HTDemucsEngine::initialize(const QString& customModelPath) {
     }
 
     // Check for Fine-Tuned models first (SOTA quality)
-    const QString ftVocPath = "/Users/dromang/Documents/Gemini/Gemini/Skills/replica-gemini/mixxx/models/htdemucs_ft_vocals.onnx";
-    const QString ftDrumPath = "/Users/dromang/Documents/Gemini/Gemini/Skills/replica-gemini/mixxx/models/htdemucs_ft_drums.onnx";
+    const QString ftVocPath = findModelFile("htdemucs_ft_vocals.onnx");
+    const QString ftDrumPath = findModelFile("htdemucs_ft_drums.onnx");
 
-    if (customModelPath.isEmpty() && QFileInfo::exists(ftVocPath) && QFileInfo::exists(ftDrumPath)) {
+    if (customModelPath.isEmpty() && !ftVocPath.isEmpty() && !ftDrumPath.isEmpty()) {
         try {
             qDebug() << "HTDemucsEngine: Loading Fine-Tuned (HTDemucs-FT) ONNX specialist models...";
             m_pEnv = std::make_unique<Ort::Env>(ORT_LOGGING_LEVEL_WARNING, "HTDemucsEngine");
@@ -102,8 +135,9 @@ bool HTDemucsEngine::initialize(const QString& customModelPath) {
 
     QString modelPath = customModelPath;
     if (modelPath.isEmpty() || !QFileInfo::exists(modelPath)) {
-        if (!locateModel(&modelPath)) {
-            qDebug() << "HTDemucsEngine: No htdemucs.onnx model found!";
+        modelPath = findModelFile("htdemucs.onnx");
+        if (modelPath.isEmpty() || !QFileInfo::exists(modelPath)) {
+            qDebug() << "HTDemucsEngine: No htdemucs.onnx model found in system paths!";
             return false;
         }
     }
@@ -407,5 +441,25 @@ void HTDemucsEngine::finalize() {
     m_bInitialized = false;
     m_bFineTuned = false;
 }
+
+#else // !MIXXX_HAS_ONNXRUNTIME
+
+HTDemucsEngine& HTDemucsEngine::instance() {
+    static HTDemucsEngine* s_instance = new HTDemucsEngine();
+    return *s_instance;
+}
+
+HTDemucsEngine::HTDemucsEngine() {}
+HTDemucsEngine::~HTDemucsEngine() {}
+bool HTDemucsEngine::locateModel(QString*) const { return false; }
+bool HTDemucsEngine::isAvailable() { return false; }
+bool HTDemucsEngine::isInitialized() const { return false; }
+bool HTDemucsEngine::initialize(const QString&) { return false; }
+bool HTDemucsEngine::separateSegment(const float*, const float*, float*, float*, float*, float*, float*, float*, float*, float*) { return false; }
+bool HTDemucsEngine::separateSegment3Stem(const float*, const float*, float*, float*, float*, float*, float*, float*) { return false; }
+bool HTDemucsEngine::separateTrack(uint32_t, const float*, const float*, float*, float*, float*, float*, float*, float*, std::function<void(double)>, std::atomic<bool>*) { return false; }
+void HTDemucsEngine::finalize() {}
+
+#endif // MIXXX_HAS_ONNXRUNTIME
 
 } // namespace mixxx

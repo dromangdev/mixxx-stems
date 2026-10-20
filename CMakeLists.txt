@@ -2826,13 +2826,20 @@ target_include_directories(mixxx-lib SYSTEM PUBLIC lib/rigtorp/SPSCQueue/include
 find_path(ONNXRUNTIME_INCLUDE_DIR NAMES onnxruntime_cxx_api.h
   PATHS
     /opt/homebrew/include/onnxruntime
+    /opt/homebrew/include
     /usr/local/include/onnxruntime
+    /usr/local/include
+    /usr/include/onnxruntime
+    /usr/include
     ${ANDROID_NDK}/sources/third_party/onnxruntime/include
 )
 find_library(ONNXRUNTIME_LIBRARY NAMES onnxruntime
   PATHS
     /opt/homebrew/lib
     /usr/local/lib
+    /usr/lib
+    /usr/lib/x86_64-linux-gnu
+    /usr/lib/aarch64-linux-gnu
     ${ANDROID_NDK}/sources/third_party/onnxruntime/libs/${ANDROID_ABI}
 )
 if(ONNXRUNTIME_INCLUDE_DIR AND ONNXRUNTIME_LIBRARY)
