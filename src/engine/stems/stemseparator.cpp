@@ -4,6 +4,8 @@
 #include <onnxruntime_cxx_api.h>
 #ifdef __APPLE__
 #include <coreml_provider_factory.h>
+#elif defined(__ANDROID__) || defined(ANDROID)
+#include <nnapi_provider_factory.h>
 #endif
 #endif
 
@@ -14,6 +16,8 @@
 #include <QDebug>
 #include <cmath>
 #include <cstring>
+#include <thread>
+#include <algorithm>
 
 namespace mixxx {
 
@@ -23,7 +27,44 @@ namespace {
 const char* const kInputNames[] = {"mix"};
 const char* const kOutputNames[] = {"stems"};
 
+void configureSessionOptions(Ort::SessionOptions& options) {
+    options.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
+
+#if defined(__ANDROID__) || defined(ANDROID)
+    // On mobile devices, dynamically clamp thread pool to 2-4 threads to prevent thermal throttling
+    const unsigned int hwThreads = std::thread::hardware_concurrency();
+    const unsigned int numThreads = std::max(2u, std::min(4u, hwThreads == 0 ? 2u : hwThreads));
+    options.SetIntraOpNumThreads(numThreads);
+
+    // Enable hardware NPU/GPU acceleration via Android NNAPI execution provider
+    try {
+        Ort::ThrowOnError(OrtSessionOptionsAppendExecutionProvider_Nnapi(options, 0));
+        qDebug() << "HTDemucsEngine: Android NNAPI hardware execution provider active";
+    } catch (const std::exception& e) {
+        qDebug() << "HTDemucsEngine: NNAPI execution provider fallback to CPU:" << e.what();
+    }
+#else
+    options.SetIntraOpNumThreads(8);
+#endif
+}
+
 QString findModelFile(const QString& filename) {
+#if defined(__ANDROID__) || defined(ANDROID)
+    // On Android, check if model is packaged in APK assets:/ and unpack to writable AppDataLocation
+    const QString assetPath = "assets:/models/" + filename;
+    if (QFile::exists(assetPath)) {
+        const QString destDir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) + "/models";
+        QDir().mkpath(destDir);
+        const QString destPath = destDir + "/" + filename;
+        if (!QFileInfo::exists(destPath)) {
+            QFile::copy(assetPath, destPath);
+        }
+        if (QFileInfo::exists(destPath)) {
+            return destPath;
+        }
+    }
+#endif
+
     const QStringList searchDirs = {
         QCoreApplication::applicationDirPath() + "/models",
         QCoreApplication::applicationDirPath() + "/../Resources/models",
@@ -113,8 +154,7 @@ bool HTDemucsEngine::initialize(const QString& customModelPath) {
             m_pEnv = std::make_unique<Ort::Env>(ORT_LOGGING_LEVEL_WARNING, "HTDemucsEngine");
 
             Ort::SessionOptions sessionOptions;
-            sessionOptions.SetIntraOpNumThreads(8);
-            sessionOptions.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
+            configureSessionOptions(sessionOptions);
 
             m_pSessionVoc = std::make_unique<Ort::Session>(
                     *m_pEnv, ftVocPath.toUtf8().constData(), sessionOptions);
@@ -147,8 +187,7 @@ bool HTDemucsEngine::initialize(const QString& customModelPath) {
         m_pEnv = std::make_unique<Ort::Env>(ORT_LOGGING_LEVEL_WARNING, "HTDemucsEngine");
 
         Ort::SessionOptions sessionOptions;
-        sessionOptions.SetIntraOpNumThreads(8);
-        sessionOptions.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
+        configureSessionOptions(sessionOptions);
 
         m_pSession = std::make_unique<Ort::Session>(
                 *m_pEnv,

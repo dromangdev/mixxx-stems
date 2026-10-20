@@ -2850,7 +2850,9 @@ if(NOT (ONNXRUNTIME_INCLUDE_DIR AND ONNXRUNTIME_LIBRARY) AND MIXXX_AUTO_DOWNLOAD
   set(ORT_VERSION "1.19.2")
   set(ORT_URL "")
 
-  if(APPLE)
+  if(ANDROID)
+    set(ORT_URL "https://repo1.maven.org/maven2/com/microsoft/onnxruntime/onnxruntime-android/${ORT_VERSION}/onnxruntime-android-${ORT_VERSION}.aar")
+  elseif(APPLE)
     if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
       set(ORT_URL "https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-osx-arm64-${ORT_VERSION}.tgz")
     else()
@@ -2880,11 +2882,22 @@ if(NOT (ONNXRUNTIME_INCLUDE_DIR AND ONNXRUNTIME_LIBRARY) AND MIXXX_AUTO_DOWNLOAD
     )
     FetchContent_MakeAvailable(onnxruntime_prebuilt)
 
-    set(ONNXRUNTIME_INCLUDE_DIR "${onnxruntime_prebuilt_SOURCE_DIR}/include")
-    find_library(ONNXRUNTIME_LIBRARY NAMES onnxruntime
-      PATHS "${onnxruntime_prebuilt_SOURCE_DIR}/lib"
-      NO_DEFAULT_PATH
-    )
+    if(ANDROID)
+      set(ONNXRUNTIME_INCLUDE_DIR "${onnxruntime_prebuilt_SOURCE_DIR}/headers")
+      find_library(ONNXRUNTIME_LIBRARY NAMES onnxruntime
+        PATHS "${onnxruntime_prebuilt_SOURCE_DIR}/jni/${ANDROID_ABI}"
+        NO_DEFAULT_PATH
+      )
+      set_target_properties(mixxx PROPERTIES
+        QT_ANDROID_EXTRA_LIBS "${ONNXRUNTIME_LIBRARY}"
+      )
+    else()
+      set(ONNXRUNTIME_INCLUDE_DIR "${onnxruntime_prebuilt_SOURCE_DIR}/include")
+      find_library(ONNXRUNTIME_LIBRARY NAMES onnxruntime
+        PATHS "${onnxruntime_prebuilt_SOURCE_DIR}/lib"
+        NO_DEFAULT_PATH
+      )
+    endif()
 
     if(APPLE)
       file(GLOB ORT_LIBS "${onnxruntime_prebuilt_SOURCE_DIR}/lib/libonnxruntime*.*dylib*")
